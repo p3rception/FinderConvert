@@ -2890,7 +2890,7 @@ struct HistoryTab: View {
                     Text("Undone")
                         .font(.caption)
                         .foregroundStyle(.green)
-                } else if entry.success && entry.outputFiles.contains(where: { $0.hasPrefix("/") }) {
+                } else if entry.success && entry.outputFiles.contains(where: { $0.hasPrefix("/") && FileManager.default.fileExists(atPath: $0) }) {
                     Button {
                         undoEntry(entry)
                     } label: {
