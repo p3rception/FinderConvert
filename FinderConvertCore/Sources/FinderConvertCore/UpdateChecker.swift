@@ -33,7 +33,7 @@ public actor UpdateChecker {
     public static let shared = UpdateChecker()
 
     private let logger = Logger(subsystem: "FinderConvert", category: "update-checker")
-    private let repoOwner = "turman17"
+    private let repoOwner = "p3rception"
     private let repoName = "FinderConvert"
     private let currentVersion =
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
