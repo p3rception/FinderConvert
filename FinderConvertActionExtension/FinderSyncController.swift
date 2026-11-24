@@ -233,108 +233,31 @@ class FinderSyncController: FIFinderSync {
         }
     }
     
-    private var sharedFilePath: URL {
+    // One file per action so quick successive actions can't overwrite each
+    // other before the app reads them. The app picks up every
+    // pending_action-*.json, oldest first
+    private func newActionFileURL() -> URL {
+        let name = "pending_action-\(UUID().uuidString).json"
         guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             logger.error("Could not resolve document directory, falling back to temporary directory")
-            return FileManager.default.temporaryDirectory.appendingPathComponent("pending_actions.json")
+            return FileManager.default.temporaryDirectory.appendingPathComponent(name)
         }
-        return docs.appendingPathComponent("pending_actions.json")
+        return docs.appendingPathComponent(name)
     }
 
     @objc func configureFormats(_ sender: Any?) {
-        let filePath = self.sharedFilePath
-        Task { @MainActor in
-            let action = ["action": "configure"]
-            do {
-                let data = try JSONSerialization.data(withJSONObject: action)
-                try data.write(to: filePath, options: .atomic)
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: filePath.path)
-            } catch {
-                logger.error("Failed to write action file: \(error.localizedDescription, privacy: .public)")
-            }
-            let appURL = Bundle.main.bundleURL
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-            
-            let bundleIdentifier = "com.finderconvert.app"
-            let isRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty
-            
-            if isRunning {
-                DistributedNotificationCenter.default().postNotificationName(
-                    NSNotification.Name("com.finderconvert.app.Wakeup"),
-                    object: nil,
-                    userInfo: nil,
-                    deliverImmediately: true
-                )
-            } else {
-                let config = NSWorkspace.OpenConfiguration()
-                config.activates = true
-                NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, error in
-                    if let error = error {
-                        logger.error("Failed to open app: \(error.localizedDescription)")
-                    }
-                }
-            }
-        }
+        send(["action": "configure"], activate: true)
     }
 
     private func performConversion(to targetFormat: String) {
         logger.info("performConversion called for target format: \(targetFormat, privacy: .public)")
-        
+
         guard let selectedURLs = FIFinderSyncController.default().selectedItemURLs(), !selectedURLs.isEmpty else {
             logger.error("No selected item URLs found!")
             return
         }
         logger.info("Found \(selectedURLs.count) selected URLs.")
-
-        let filePath = self.sharedFilePath
-        let filePaths = selectedURLs.map { $0.path }
-        
-        Task { @MainActor in
-            let action: [String: Any] = [
-                "action": "convert",
-                "targetFormatId": targetFormat,
-                "filePaths": filePaths
-            ]
-            
-            do {
-                let data = try JSONSerialization.data(withJSONObject: action)
-                try data.write(to: filePath, options: .atomic)
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: filePath.path)
-            } catch {
-                logger.error("Failed to write action file: \(error.localizedDescription, privacy: .public)")
-                return
-            }
-
-            let appURL = Bundle.main.bundleURL
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-
-            let bundleIdentifier = "com.finderconvert.app"
-            let isRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty
-
-            if isRunning {
-                DistributedNotificationCenter.default().postNotificationName(
-                    NSNotification.Name("com.finderconvert.app.Wakeup"),
-                    object: nil,
-                    userInfo: nil,
-                    deliverImmediately: true
-                )
-                logger.info("App is already running. Sent distributed notification.")
-            } else {
-                let config = NSWorkspace.OpenConfiguration()
-                config.activates = false
-                NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, error in
-                    if let error = error {
-                        logger.error("Failed to open app: \(error.localizedDescription)")
-                    } else {
-                        logger.info("Successfully asked main app to open.")
-                    }
-                }
-            }
-        }
+        send(["action": "convert", "targetFormatId": targetFormat, "filePaths": selectedURLs.map(\.path)], activate: false)
     }
 
     @objc func mergePDFs(_ sender: Any?) {
@@ -354,7 +277,7 @@ class FinderSyncController: FIFinderSync {
     // Hand an action to the main app: write it to the shared file, then wake
     // the app (or launch it)
     private func send(_ payload: [String: Any], activate: Bool) {
-        let filePath = self.sharedFilePath
+        let filePath = newActionFileURL()
         let data: Data
         do {
             data = try JSONSerialization.data(withJSONObject: payload)

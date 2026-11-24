@@ -526,9 +526,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     var sharedDefaults: UserDefaults?
 
-    private var sharedFilePath: URL {
-        let homeDir = URL(fileURLWithPath: NSHomeDirectory())
-        return homeDir.appendingPathComponent("Library/Containers/com.finderconvert.app.ActionExtension/Data/Documents/pending_actions.json")
+    private var extensionDocuments: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Containers/com.finderconvert.app.ActionExtension/Data/Documents")
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -590,15 +590,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let _ = checkPendingActions()
     }
     
+    // The extension writes one pending_action-<uuid>.json per action
+    // (pending_actions.json from builds before that). Handle all, oldest first
     @discardableResult
     private func checkPendingActions() -> Bool {
-        guard FileManager.default.fileExists(atPath: sharedFilePath.path) else { return false }
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: extensionDocuments, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        let pending = files
+            .filter { $0.lastPathComponent == "pending_actions.json"
+                || ($0.lastPathComponent.hasPrefix("pending_action-") && $0.pathExtension == "json") }
+            .sorted {
+                let first = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                let second = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                return first < second
+            }
+        var handled = false
+        for file in pending where handlePendingAction(at: file) {
+            handled = true
+        }
+        return handled
+    }
 
+    private func handlePendingAction(at url: URL) -> Bool {
         let data: Data
         let json: [String: Any]
         let action: String
         do {
-            data = try Data(contentsOf: sharedFilePath)
+            data = try Data(contentsOf: url)
+            // Delete before parsing so a malformed file isn't retried on every wake-up
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                logger.warning("Failed to remove pending action file: \(error.localizedDescription, privacy: .public)")
+            }
             guard let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let parsedAction = parsed["action"] as? String else {
                 logger.error("Pending action file has invalid format")
@@ -611,12 +635,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             return false
         }
 
-        do {
-            try FileManager.default.removeItem(at: sharedFilePath)
-        } catch {
-            logger.warning("Failed to remove pending action file: \(error.localizedDescription, privacy: .public)")
-        }
-        
         if action == "configure" {
             openPreferencesWindow()
             navigateToTab(.formats)
