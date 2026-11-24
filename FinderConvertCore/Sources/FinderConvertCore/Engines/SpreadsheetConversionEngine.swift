@@ -502,11 +502,10 @@ public actor SpreadsheetConversionEngine: ConversionEngine {
                 let cellRef = "\(colLetter)\(rowNum)"
                 let escaped = xmlEscape(value)
 
-                // Try to write as number if possible
-                if let _ = Double(value) {
+                if Self.isPlainNumber(value) {
                     sheetXML += "<c r=\"\(cellRef)\"><v>\(escaped)</v></c>"
                 } else {
-                    sheetXML += "<c r=\"\(cellRef)\" t=\"inlineStr\"><is><t>\(escaped)</t></is></c>"
+                    sheetXML += "<c r=\"\(cellRef)\" t=\"inlineStr\"><is><t xml:space=\"preserve\">\(escaped)</t></is></c>"
                 }
             }
             sheetXML += "</row>\n"
@@ -533,6 +532,14 @@ public actor SpreadsheetConversionEngine: ConversionEngine {
         }
     }
 
+    // Written as a number only when Excel would keep it exactly: no leading
+    // zeros ("00123" zip codes), no nan/inf/hex that Double accepts, and at
+    // most 15 digits (longer IDs would lose precision)
+    static func isPlainNumber(_ value: String) -> Bool {
+        value.wholeMatch(of: /-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/) != nil
+            && value.prefix { $0 != "e" && $0 != "E" }.filter(\.isNumber).count <= 15
+    }
+
     private func columnLetter(_ index: Int) -> String {
         var result = ""
         var n = index
@@ -543,8 +550,12 @@ public actor SpreadsheetConversionEngine: ConversionEngine {
         return result
     }
 
+    // Control characters other than tab, newline and CR are illegal in XML
+    // 1.0 and make Excel/Word reject the whole file, so they are dropped
     private func xmlEscape(_ string: String) -> String {
-        string
+        String(String.UnicodeScalarView(string.unicodeScalars.filter {
+            $0.value >= 0x20 ? $0.value != 0xFFFE && $0.value != 0xFFFF : [0x09, 0x0A, 0x0D].contains($0.value)
+        }))
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")

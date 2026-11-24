@@ -312,4 +312,24 @@ final class EncoderTests: XCTestCase {
             XCTFail("a different app passed the signature check")
         } catch UpdateInstallError.signatureMismatch {}
     }
+
+    func testXLSXKeepsTextThatOnlyLooksNumeric() async throws {
+        for (value, isNumber) in [("4.5", true), ("-12", true), ("1e5", true), ("0", true), ("00123", false),
+                                  ("nan", false), ("inf", false), ("0x1p3", false), ("+5", false), ("1234567890123456", false)] {
+            XCTAssertEqual(SpreadsheetConversionEngine.isPlainNumber(value), isNumber, value)
+        }
+
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let csv = directory.appending(path: "table.csv")
+        try "zip,price,note\n00123,4.5,a\u{01}b\n".write(to: csv, atomically: true, encoding: .utf8)
+        let xlsx = try await convert(csv, to: .xlsx, with: SpreadsheetConversionEngine())
+        try run("/usr/bin/unzip", ["-q", xlsx.path, "-d", directory.appending(path: "x").path])
+        let sheet = try Data(contentsOf: directory.appending(path: "x/xl/worksheets/sheet1.xml"))
+        XCTAssertNoThrow(try XMLDocument(data: sheet), "sheet must be well-formed XML")
+        let xml = String(decoding: sheet, as: UTF8.self)
+        XCTAssertTrue(xml.contains("<t xml:space=\"preserve\">00123</t>"))
+        XCTAssertTrue(xml.contains("<v>4.5</v>"))
+        XCTAssertTrue(xml.contains(">ab</t>"))
+    }
 }

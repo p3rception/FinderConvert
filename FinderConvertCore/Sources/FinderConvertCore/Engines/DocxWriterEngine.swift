@@ -234,8 +234,12 @@ public actor DocxWriterEngine: ConversionEngine {
         """
     }
 
+    // Control characters other than tab, newline and CR are illegal in XML
+    // 1.0 and make Excel/Word reject the whole file, so they are dropped
     private func xmlEscape(_ string: String) -> String {
-        string
+        String(String.UnicodeScalarView(string.unicodeScalars.filter {
+            $0.value >= 0x20 ? $0.value != 0xFFFE && $0.value != 0xFFFF : [0x09, 0x0A, 0x0D].contains($0.value)
+        }))
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
