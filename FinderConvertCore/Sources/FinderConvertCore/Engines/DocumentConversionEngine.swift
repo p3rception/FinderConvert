@@ -118,7 +118,7 @@ public actor DocumentConversionEngine: ConversionEngine {
         switch effectiveType {
         case .rtf: documentType = .rtf
         case .html: documentType = .html
-        case .docx: documentType = .docFormat
+        case .docx: documentType = .officeOpenXML
         case .txt: documentType = .plain
         default: documentType = .plain
         }

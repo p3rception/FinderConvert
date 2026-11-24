@@ -195,4 +195,33 @@ final class EncoderTests: XCTestCase {
                                               space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue))
         XCTAssertFalse(try NativeImageConversionEngine.encodeWebP(try XCTUnwrap(context.makeImage()), quality: 90).isEmpty)
     }
+
+    private func run(_ tool: String, _ arguments: [String], in directory: URL? = nil) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = arguments
+        process.currentDirectoryURL = directory
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, tool)
+    }
+
+    private func convert(_ url: URL, to output: OutputFormat, with engine: some ConversionEngine) async throws -> URL {
+        let job = ConversionJob(sourceBookmarkData: try url.bookmarkData(), requestedOutput: output,
+                                destinationPolicy: .neverReplace(customSuffix: nil))
+        return try await engine.convert(job: job) { _ in }.outputURL
+    }
+
+    func testDOCXConvertsToText() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let text = directory.appending(path: "note.txt")
+        try "Hello from DOCX".write(to: text, atomically: true, encoding: .utf8)
+        let docx = directory.appending(path: "note.docx")
+        try run("/usr/bin/textutil", ["-convert", "docx", text.path, "-output", docx.path])
+
+        let output = try await convert(docx, to: .html, with: DocumentConversionEngine())
+        XCTAssertTrue(try String(contentsOf: output, encoding: .utf8).contains("Hello from DOCX"))
+    }
 }
