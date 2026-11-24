@@ -31,7 +31,9 @@ public struct OutputNamingStrategy: Sendable {
         case let .mirroredDirectory(originalRoot, newRoot):
             let resolvedSource = sourceURL.standardizedFileURL.resolvingSymlinksInPath().path
             let resolvedRoot = originalRoot.standardizedFileURL.resolvingSymlinksInPath().path
-            let relativePath = resolvedSource.replacingOccurrences(of: resolvedRoot, with: "")
+            let relativePath = resolvedSource.hasPrefix(resolvedRoot + "/")
+                ? String(resolvedSource.dropFirst(resolvedRoot.count))
+                : sourceURL.lastPathComponent
             let cleanRelative = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             candidate = newRoot.appending(path: cleanRelative, directoryHint: .notDirectory)
             candidate.deletePathExtension()
