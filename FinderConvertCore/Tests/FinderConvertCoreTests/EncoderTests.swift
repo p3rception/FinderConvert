@@ -226,29 +226,62 @@ final class EncoderTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: output, encoding: .utf8).contains("Hello from DOCX"))
     }
 
-    func testEPUBToPDFPaginates() async throws {
-        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    // A zipped EPUB whose spine lists `chapters` (manifest hrefs) in order.
+    // `files` are written into the book, `symlinks` map a book path to a target
+    private func makeEPUB(in directory: URL, chapters: [String], files: [String: String],
+                          symlinks: [String: URL] = [:]) throws -> URL {
         let book = directory.appending(path: "book")
         try FileManager.default.createDirectory(at: book.appending(path: "META-INF"), withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
         try "application/epub+zip".write(to: book.appending(path: "mimetype"), atomically: true, encoding: .utf8)
         try #"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#
             .write(to: book.appending(path: "META-INF/container.xml"), atomically: true, encoding: .utf8)
-        try #"<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="c1" href="c1.xhtml"/></manifest><spine><itemref idref="c1"/></spine></package>"#
+        let items = chapters.enumerated().map { #"<item id="c\#($0.offset)" href="\#($0.element)"/>"# }.joined()
+        let refs = chapters.indices.map { #"<itemref idref="c\#($0)"/>"# }.joined()
+        try #"<package xmlns="http://www.idpf.org/2007/opf"><manifest>\#(items)</manifest><spine>\#(refs)</spine></package>"#
             .write(to: book.appending(path: "content.opf"), atomically: true, encoding: .utf8)
-        let paragraphs = String(repeating: "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>", count: 400)
-        try "<html><body>\(paragraphs)</body></html>".write(to: book.appending(path: "c1.xhtml"), atomically: true, encoding: .utf8)
+        for (name, content) in files {
+            try content.write(to: book.appending(path: name), atomically: true, encoding: .utf8)
+        }
+        for (name, target) in symlinks {
+            try FileManager.default.createSymbolicLink(at: book.appending(path: name), withDestinationURL: target)
+        }
         let epub = directory.appending(path: "book.epub")
-        try run("/usr/bin/zip", ["-qr", epub.path, "."], in: book)
-
-        let output = try await convert(epub, to: .pdf, with: EpubConversionEngine())
-        XCTAssertGreaterThan(try XCTUnwrap(PDFDocument(url: output)).pageCount, 1)
+        try run("/usr/bin/zip", ["-qry", epub.path, "."], in: book)
+        return epub
     }
 
     private func makeDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    func testEPUBToPDFPaginates() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let paragraphs = String(repeating: "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>", count: 400)
+        let epub = try makeEPUB(in: directory, chapters: ["c1.xhtml"], files: ["c1.xhtml": "<html><body>\(paragraphs)</body></html>"])
+
+        let output = try await convert(epub, to: .pdf, with: EpubConversionEngine())
+        XCTAssertGreaterThan(try XCTUnwrap(PDFDocument(url: output)).pageCount, 1)
+    }
+
+    func testEPUBReadsNothingOutsideTheBook() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let secret = directory.appending(path: "secret.xhtml")
+        try "<html><body>SECRET-VALUE</body></html>".write(to: secret, atomically: true, encoding: .utf8)
+        let traversal = String(repeating: "../", count: 30) + secret.path.dropFirst()
+        let epub = try makeEPUB(
+            in: directory,
+            chapters: ["c1.xhtml", traversal, "linked.xhtml"],
+            files: ["c1.xhtml": "<html><body>LEGIT-CHAPTER</body></html>"],
+            symlinks: ["linked.xhtml": secret]
+        )
+
+        let html = try String(contentsOf: try await convert(epub, to: .html, with: EpubConversionEngine()), encoding: .utf8)
+        XCTAssertTrue(html.contains("LEGIT-CHAPTER"))
+        XCTAssertFalse(html.contains("SECRET-VALUE"))
     }
 
     func testHTMLToPDFRunsNoScriptsAndStaysOnTheDocument() async throws {

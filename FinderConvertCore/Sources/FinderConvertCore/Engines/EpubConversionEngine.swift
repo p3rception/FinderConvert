@@ -63,7 +63,7 @@ public actor EpubConversionEngine: ConversionEngine {
         progress(0.3)
 
         // Find content files by parsing container.xml
-        let contentFiles = try findContentFiles(in: tempDir)
+        let contentFiles = try findContentFiles(in: tempDir).compactMap { Self.resolved($0, inside: tempDir) }
         guard !contentFiles.isEmpty else {
             throw ConversionError.filesystemError("No content found in EPUB.")
         }
@@ -122,6 +122,16 @@ public actor EpubConversionEngine: ConversionEngine {
     }
 
     public func cancel(jobID: UUID) async {}
+
+    // The book's real path, or nil when a "../" href or a symlink in the zip
+    // points outside the extraction folder. realpath follows the kernel's
+    // resolution order, so the checked path is the path that gets read
+    static func resolved(_ url: URL, inside directory: URL) -> URL? {
+        guard let rootPointer = realpath(directory.path, nil), let filePointer = realpath(url.path, nil) else { return nil }
+        defer { free(rootPointer); free(filePointer) }
+        let root = String(cString: rootPointer), file = String(cString: filePointer)
+        return file.hasPrefix(root + "/") ? URL(fileURLWithPath: file) : nil
+    }
 
     private func findContentFiles(in epubDir: URL) throws -> [URL] {
         // Parse META-INF/container.xml to find content.opf
