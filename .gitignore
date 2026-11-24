@@ -30,3 +30,6 @@ test_*.swift
 # Distribution
 *.dmg
 *.zip
+
+# Local planning notes
+PLAN.md
