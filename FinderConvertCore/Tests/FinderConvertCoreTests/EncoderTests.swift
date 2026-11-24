@@ -431,4 +431,40 @@ final class EncoderTests: XCTestCase {
         let csv = try String(contentsOf: try await convert(xlsx, to: .csv, with: SpreadsheetConversionEngine()), encoding: .utf8)
         XCTAssertEqual(csv.trimmingCharacters(in: .whitespacesAndNewlines), "2024-01-15,2024-01-15 14:30:00,45306,7")
     }
+
+    func testMarkdownRendersTablesNestedListsAndImages() {
+        let markdown = """
+        # Title
+
+        | Name | Qty | Note |
+        |:-----|----:|:----:|
+        | a\\|b | 2 | **x** |
+        | short |
+
+        - one
+          - nested
+            1. deep
+        - two
+
+        ![diagram](img/flow.png "Flow")
+
+        ```
+        <raw>
+        ```
+        > quoted
+        ---
+        """
+        let html = DocumentConversionEngine().markdownToHTML(markdown, style: .plain)
+        let body = String(html[html.range(of: "<body>")!.upperBound...])
+            .components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.joined()
+
+        XCTAssertTrue(body.contains("<h1>Title</h1>"))
+        XCTAssertTrue(body.contains(#"<thead><tr><th style="text-align: left">Name</th><th style="text-align: right">Qty</th><th style="text-align: center">Note</th></tr></thead>"#))
+        XCTAssertTrue(body.contains(#"<tr><td style="text-align: left">a|b</td><td style="text-align: right">2</td><td style="text-align: center"><strong>x</strong></td></tr>"#))
+        XCTAssertTrue(body.contains(#"<tr><td style="text-align: left">short</td><td style="text-align: right"></td><td style="text-align: center"></td></tr>"#))
+        XCTAssertTrue(body.contains("<ul><li>one<ul><li>nested<ol><li>deep</li></ol></li></ul></li><li>two</li></ul>"), body)
+        XCTAssertTrue(body.contains(#"<img src="img/flow.png" alt="diagram">"#))
+        XCTAssertTrue(body.contains("<pre><code>&lt;raw&gt;</code></pre>"))
+        XCTAssertTrue(body.contains("<blockquote><p>quoted</p></blockquote><hr/>"))
+    }
 }

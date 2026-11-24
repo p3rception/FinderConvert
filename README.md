@@ -74,7 +74,7 @@ Built entirely on native frameworks (ImageIO, AVFoundation, PDFKit, WebKit) plus
 - **Video to audio** -- extract the audio track (MP4/MOV to MP3/M4A/WAV/AIFF/FLAC)
 - **SVG to raster** -- render vector graphics to PNG, JPEG, PDF at high resolution
 - **EPUB to PDF/HTML/TXT** -- convert ebooks with chapter ordering
-- **Markdown to HTML/PDF** -- headings, bold, italic, code blocks, lists, links
+- **Markdown to HTML/PDF** -- headings, bold, italic, code blocks, nested lists, links, images and tables (with column alignment)
 - **JSON to CSV/TSV** -- flattens object arrays into tabular format
 
 ### Per-Format Settings

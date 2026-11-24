@@ -336,17 +336,42 @@ public actor DocumentConversionEngine: ConversionEngine {
         var html = ""
         let lines = markdown.components(separatedBy: .newlines)
         var inCodeBlock = false
-        var inList = false
-        var listType = "" // "ul" or "ol"
+        // Open lists, outermost first. An item's <li> stays open so a more
+        // indented list nests inside it
+        var lists: [(indent: Int, tag: String)] = []
 
-        for line in lines {
+        func closeLists(deeperThan indent: Int = -1) {
+            while let last = lists.last, last.indent > indent {
+                html += "</li></\(last.tag)>\n"
+                lists.removeLast()
+            }
+        }
+
+        func listItem(_ line: String) -> (indent: Int, tag: String, content: String)? {
+            let indent = line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") {
+                return (indent, "ul", String(trimmed.dropFirst(2)))
+            }
+            if let dot = trimmed.firstIndex(where: { $0 == "." || $0 == ")" }), dot > trimmed.startIndex,
+               trimmed[..<dot].allSatisfy(\.isNumber), trimmed[trimmed.index(after: dot)...].hasPrefix(" ") {
+                return (indent, "ol", String(trimmed[trimmed.index(after: dot)...]).trimmingCharacters(in: .whitespaces))
+            }
+            return nil
+        }
+
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            index += 1
+
             // Code blocks
-            if line.hasPrefix("```") {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
                 if inCodeBlock {
                     html += "</code></pre>\n"
                     inCodeBlock = false
                 } else {
-                    if inList { html += "</\(listType)>\n"; inList = false }
+                    closeLists()
                     html += "<pre><code>"
                     inCodeBlock = true
                 }
@@ -361,71 +386,71 @@ public actor DocumentConversionEngine: ConversionEngine {
 
             // Empty line
             if trimmed.isEmpty {
-                if inList { html += "</\(listType)>\n"; inList = false }
+                closeLists()
+                continue
+            }
+
+            if let item = listItem(line) {
+                closeLists(deeperThan: item.indent)
+                if let last = lists.last, last.indent == item.indent {
+                    if last.tag == item.tag {
+                        html += "</li>\n"
+                    } else {
+                        html += "</li></\(last.tag)>\n"
+                        lists.removeLast()
+                    }
+                }
+                if lists.last.map({ $0.indent < item.indent }) ?? true {
+                    html += "<\(item.tag)>\n"
+                    lists.append((item.indent, item.tag))
+                }
+                html += "<li>\(processInline(item.content))"
+                continue
+            }
+            closeLists()
+
+            // Pipe table: a header row, then a |---|:---:| separator row
+            if trimmed.contains("|"), index < lines.count, let alignments = tableAlignments(lines[index]) {
+                index += 1
+                let header = tableCells(trimmed)
+                func cellTag(_ name: String, _ column: Int, _ content: String) -> String {
+                    let align = column < alignments.count ? alignments[column] : nil
+                    return "<\(name)\(align.map { " style=\"text-align: \($0)\"" } ?? "")>\(processInline(content))</\(name)>"
+                }
+                html += "<table>\n<thead><tr>" + header.enumerated().map { cellTag("th", $0.offset, $0.element) }.joined() + "</tr></thead>\n<tbody>\n"
+                while index < lines.count, lines[index].contains("|"), !lines[index].trimmingCharacters(in: .whitespaces).isEmpty {
+                    let cells = tableCells(lines[index].trimmingCharacters(in: .whitespaces))
+                    // Rows are padded or cut to the header's width, as GitHub does
+                    let row = (0..<header.count).map { $0 < cells.count ? cells[$0] : "" }
+                    html += "<tr>" + row.enumerated().map { cellTag("td", $0.offset, $0.element) }.joined() + "</tr>\n"
+                    index += 1
+                }
+                html += "</tbody>\n</table>\n"
                 continue
             }
 
             // Headers
-            if trimmed.hasPrefix("######") {
-                if inList { html += "</\(listType)>\n"; inList = false }
-                html += "<h6>\(processInline(String(trimmed.dropFirst(6).trimmingCharacters(in: .whitespaces))))</h6>\n"
-            } else if trimmed.hasPrefix("#####") {
-                if inList { html += "</\(listType)>\n"; inList = false }
-                html += "<h5>\(processInline(String(trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces))))</h5>\n"
-            } else if trimmed.hasPrefix("####") {
-                if inList { html += "</\(listType)>\n"; inList = false }
-                html += "<h4>\(processInline(String(trimmed.dropFirst(4).trimmingCharacters(in: .whitespaces))))</h4>\n"
-            } else if trimmed.hasPrefix("###") {
-                if inList { html += "</\(listType)>\n"; inList = false }
-                html += "<h3>\(processInline(String(trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces))))</h3>\n"
-            } else if trimmed.hasPrefix("##") {
-                if inList { html += "</\(listType)>\n"; inList = false }
-                html += "<h2>\(processInline(String(trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces))))</h2>\n"
-            } else if trimmed.hasPrefix("# ") {
-                if inList { html += "</\(listType)>\n"; inList = false }
-                html += "<h1>\(processInline(String(trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces))))</h1>\n"
+            if let level = Optional(trimmed.prefix { $0 == "#" }.count), (1...6).contains(level),
+               trimmed.dropFirst(level).first == " " {
+                let text = String(trimmed.dropFirst(level)).trimmingCharacters(in: .whitespaces)
+                html += "<h\(level)>\(processInline(text))</h\(level)>\n"
             }
             // Horizontal rule
             else if trimmed == "---" || trimmed == "***" || trimmed == "___" {
-                if inList { html += "</\(listType)>\n"; inList = false }
                 html += "<hr/>\n"
             }
-            // Unordered list
-            else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
-                if !inList || listType != "ul" {
-                    if inList { html += "</\(listType)>\n" }
-                    html += "<ul>\n"; inList = true; listType = "ul"
-                }
-                html += "<li>\(processInline(String(trimmed.dropFirst(2))))</li>\n"
-            }
-            // Ordered list
-            else if trimmed.first?.isNumber == true && trimmed.contains(". ") {
-                if let dotIdx = trimmed.firstIndex(of: "."), trimmed[trimmed.startIndex..<dotIdx].allSatisfy(\.isNumber) {
-                    if !inList || listType != "ol" {
-                        if inList { html += "</\(listType)>\n" }
-                        html += "<ol>\n"; inList = true; listType = "ol"
-                    }
-                    let content = String(trimmed[trimmed.index(after: dotIdx)...]).trimmingCharacters(in: .whitespaces)
-                    html += "<li>\(processInline(content))</li>\n"
-                } else {
-                    if inList { html += "</\(listType)>\n"; inList = false }
-                    html += "<p>\(processInline(trimmed))</p>\n"
-                }
-            }
             // Blockquote
-            else if trimmed.hasPrefix("> ") {
-                if inList { html += "</\(listType)>\n"; inList = false }
-                html += "<blockquote><p>\(processInline(String(trimmed.dropFirst(2))))</p></blockquote>\n"
+            else if trimmed.hasPrefix(">") {
+                html += "<blockquote><p>\(processInline(String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)))</p></blockquote>\n"
             }
             // Regular paragraph
             else {
-                if inList { html += "</\(listType)>\n"; inList = false }
                 html += "<p>\(processInline(trimmed))</p>\n"
             }
         }
 
         if inCodeBlock { html += "</code></pre>\n" }
-        if inList { html += "</\(listType)>\n" }
+        closeLists()
 
         return """
         <!DOCTYPE html>
@@ -438,6 +463,32 @@ public actor DocumentConversionEngine: ConversionEngine {
         """
     }
 
+    // Cells of a table row; a leading and trailing pipe are optional and
+    // "\|" is a literal pipe
+    nonisolated private func tableCells(_ row: String) -> [String] {
+        var body = row.replacingOccurrences(of: "\\|", with: "\u{0}")
+        if body.hasPrefix("|") { body.removeFirst() }
+        if body.hasSuffix("|") { body.removeLast() }
+        return body.split(separator: "|", omittingEmptySubsequences: false).map {
+            $0.replacingOccurrences(of: "\u{0}", with: "|").trimmingCharacters(in: .whitespaces)
+        }
+    }
+
+    // Per-column alignment from a separator row like "| :--- | :--: | --: |",
+    // or nil when the line isn't one
+    nonisolated private func tableAlignments(_ line: String) -> [String?]? {
+        let cells = tableCells(line.trimmingCharacters(in: .whitespaces))
+        guard !cells.isEmpty, cells.allSatisfy({ $0.wholeMatch(of: /:?-+:?/) != nil }) else { return nil }
+        return cells.map { cell in
+            switch (cell.hasPrefix(":"), cell.hasSuffix(":")) {
+            case (true, true): "center"
+            case (false, true): "right"
+            case (true, false): "left"
+            default: nil
+            }
+        }
+    }
+
     nonisolated private func processInline(_ text: String) -> String {
         var result = escapeHTML(text)
         // Bold: **text** or __text__
@@ -448,6 +499,9 @@ public actor DocumentConversionEngine: ConversionEngine {
         result = result.replacingOccurrences(of: "(?<![a-zA-Z])_(.+?)_(?![a-zA-Z])", with: "<em>$1</em>", options: .regularExpression)
         // Inline code: `text`
         result = result.replacingOccurrences(of: "`(.+?)`", with: "<code>$1</code>", options: .regularExpression)
+        // Images: ![alt](src "optional title"), before links so the link
+        // pattern doesn't take them
+        result = result.replacingOccurrences(of: "!\\[([^\\]]*)\\]\\(([^)\\s]+)[^)]*\\)", with: "<img src=\"$2\" alt=\"$1\">", options: .regularExpression)
         // Links: [text](url)
         result = result.replacingOccurrences(of: "\\[(.+?)\\]\\((.+?)\\)", with: "<a href=\"$2\">$1</a>", options: .regularExpression)
         return result

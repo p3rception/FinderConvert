@@ -16,7 +16,17 @@ public enum MarkdownStyle: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    public var css: String {
+    public var css: String { themeCSS + "\n" + Self.sharedCSS }
+
+    // Tables and images look the same in every style
+    private static let sharedCSS = """
+    table { border-collapse: collapse; margin: 1em 0; }
+    th, td { border: 1px solid #d0d7de; padding: 6px 12px; }
+    th { background: #f6f8fa; font-weight: 600; }
+    img { max-width: 100%; }
+    """
+
+    private var themeCSS: String {
         switch self {
         case .modern:
             """
