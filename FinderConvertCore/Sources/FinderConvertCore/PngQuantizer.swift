@@ -261,7 +261,7 @@ enum PngQuantizer {
     }
 }
 
-private extension Data {
+extension Data {
     mutating func appendBigEndian(_ value: UInt32) {
         Swift.withUnsafeBytes(of: value.bigEndian) { append(contentsOf: $0) }
     }

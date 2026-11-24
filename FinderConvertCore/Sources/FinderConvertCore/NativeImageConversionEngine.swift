@@ -316,6 +316,94 @@ public actor NativeImageConversionEngine: ConversionEngine {
     }
 }
 
+// Lossless metadata removal: the image data is copied byte for byte and
+// only GPS, camera, EXIF, XMP and text metadata go. Orientation and
+// resolution stay, so photos don't turn sideways and screenshots keep
+// their size. ImageIO does this reliably only for JPEG (it leaves EXIF in
+// PNG, HEIC and TIFF), so PNG is handled by filtering its chunks
+public enum MetadataRemoval {
+    public static let outputSuffix = " clean"
+
+    public static func supports(_ type: DetectedFileType) -> Bool {
+        type == .jpeg || type == .png
+    }
+
+    public static func removeMetadata(from source: URL, to destination: URL, type: DetectedFileType) throws {
+        switch type {
+        case .jpeg: try copyJPEGWithoutMetadata(from: source, to: destination)
+        case .png: try copyPNGWithoutMetadata(from: source, to: destination)
+        default: throw ConversionError.unsupportedFileType(type.rawValue)
+        }
+    }
+
+    private static let keptTags: Set<String> = ["tiff:Orientation", "tiff:XResolution", "tiff:YResolution", "tiff:ResolutionUnit"]
+
+    static func copyJPEGWithoutMetadata(from source: URL, to destination: URL) throws {
+        guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
+              let output = CGImageDestinationCreateWithURL(destination as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
+            throw ConversionError.failedToDecodeImage
+        }
+        // Merging null values deletes those tags; everything not listed is kept
+        let removals = CGImageMetadataCreateMutable()
+        let existing = CGImageSourceCopyMetadataAtIndex(imageSource, 0, nil)
+        for tag in (existing.flatMap { CGImageMetadataCopyTags($0) as? [CGImageMetadataTag] }) ?? [] {
+            guard let prefix = CGImageMetadataTagCopyPrefix(tag), let name = CGImageMetadataTagCopyName(tag) else { continue }
+            let path = "\(prefix):\(name)"
+            if !keptTags.contains(path) {
+                CGImageMetadataSetValueWithPath(removals, nil, path as CFString, kCFNull)
+            }
+        }
+        let options: [CFString: Any] = [
+            kCGImageDestinationMetadata: removals,
+            kCGImageDestinationMergeMetadata: true,
+            kCGImageMetadataShouldExcludeGPS: true,
+            kCGImageMetadataShouldExcludeXMP: true,
+        ]
+        var error: Unmanaged<CFError>?
+        guard CGImageDestinationCopyImageSource(output, imageSource, options as CFDictionary, &error) else {
+            throw ConversionError.filesystemError(error?.takeRetainedValue().localizedDescription ?? "Could not rewrite the JPEG.")
+        }
+    }
+
+    // PNG is a signature plus length/type/data/CRC chunks. Text, EXIF and
+    // timestamp chunks are dropped; pixel (IDAT), colour (iCCP, sRGB, gAMA)
+    // and resolution (pHYs) chunks are copied unchanged. Orientation lives
+    // in eXIf, so a rotated PNG gets back an eXIf holding only that
+    private static let droppedChunks: Set<String> = ["eXIf", "tEXt", "zTXt", "iTXt", "tIME"]
+
+    static func copyPNGWithoutMetadata(from source: URL, to destination: URL) throws {
+        let data = try Data(contentsOf: source)
+        let orientation = CGImageSourceCreateWithData(data as CFData, nil)
+            .flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }?[kCGImagePropertyOrientation] as? Int ?? 1
+        let signature = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        guard data.starts(with: signature) else { throw ConversionError.failedToDecodeImage }
+
+        var output = signature
+        var offset = data.startIndex + signature.count
+        var sawEnd = false
+        while offset + 12 <= data.endIndex {
+            let length = data[offset..<offset + 4].reduce(0) { $0 << 8 | Int($1) }
+            let chunkEnd = offset + 12 + length
+            guard length <= 0x7FFF_FFFF, chunkEnd <= data.endIndex else { throw ConversionError.failedToDecodeImage }
+            let type = String(decoding: data[offset + 4..<offset + 8], as: UTF8.self)
+            if !droppedChunks.contains(type) {
+                output.append(data[offset..<chunkEnd])
+            }
+            if type == "IHDR", (2...8).contains(orientation) {
+                // Big-endian TIFF header, one IFD entry: Orientation (0x0112), SHORT, 1 value
+                var exif = Data([0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x01, 0x12, 0x00, 0x03])
+                exif.appendBigEndian(1)
+                exif.append(contentsOf: [0x00, UInt8(orientation), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                output.appendChunk("eXIf", exif)
+            }
+            offset = chunkEnd
+            if type == "IEND" { sawEnd = true; break }
+        }
+        guard sawEnd else { throw ConversionError.failedToDecodeImage }
+        try output.write(to: destination)
+    }
+}
+
 extension CGImage {
     // 8-bit RGBA bitmap contexts reject gray and CMYK spaces. RGB spaces
     // (Display P3, Adobe RGB) are kept so wide-gamut sources stay wide

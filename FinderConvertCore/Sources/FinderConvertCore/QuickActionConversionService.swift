@@ -180,6 +180,39 @@ public struct QuickActionConversionService: Sendable {
         )
     }
 
+    // Copy each JPEG/PNG as "name clean.ext" with its metadata removed and
+    // the image data untouched. Other files in the selection are skipped
+    public func removeMetadata(urls: [URL]) throws -> BatchConversionResult {
+        let detected = urls.compactMap { url -> DetectedFile? in
+            guard let file = try? detector.detect(url: url), MetadataRemoval.supports(file.detectedType) else { return nil }
+            return file
+        }
+        guard !detected.isEmpty else { throw ConversionError.unsupportedSelection }
+
+        var successes: [ConversionResult] = []
+        var failures: [ConversionFailure] = []
+        for file in detected {
+            let output: OutputFormat = file.detectedType == .png ? .png : .jpeg
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString).appendingPathExtension(output.preferredExtension)
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+            do {
+                let destination = try OutputNamingStrategy().destinationURL(
+                    for: file.url, outputFormat: output,
+                    policy: destinationPolicy(for: file.url, root: nil, folderSuffix: MetadataRemoval.outputSuffix, fileSuffix: MetadataRemoval.outputSuffix)
+                )
+                try MetadataRemoval.removeMetadata(from: file.url, to: tempURL, type: file.detectedType)
+                try FileManager.default.moveItem(at: tempURL, to: destination)
+                successes.append(ConversionResult(sourceURL: file.url, outputURL: destination, outputFormat: output))
+            } catch let error as ConversionError {
+                failures.append(ConversionFailure(sourceURL: file.url, error: error))
+            } catch {
+                failures.append(ConversionFailure(sourceURL: file.url, error: .filesystemError(error.localizedDescription)))
+            }
+        }
+        return BatchConversionResult(requestedOutput: successes.first?.outputFormat ?? .jpeg, successes: successes, failures: failures)
+    }
+
     // Folder contents mirror into a sibling "<folder><suffix>" (or the custom
     // output folder); loose files land beside the source
     private func destinationPolicy(for url: URL, root: URL?, folderSuffix: String, fileSuffix: String?) -> DestinationPolicy {

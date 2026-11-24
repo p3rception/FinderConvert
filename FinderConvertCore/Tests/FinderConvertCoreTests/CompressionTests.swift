@@ -233,4 +233,57 @@ final class CompressionTests: XCTestCase {
         XCTAssertEqual(result.failures.map(\.sourceURL), [locked])
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appending(path: "locked compressed.pdf").path))
     }
+
+    // A sample tagged with GPS, a lens name and a comment, rotated 90 degrees
+    private func writeTaggedSample(named name: String, type: UTType) throws -> URL {
+        let url = directory.appending(path: name)
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, type.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(QualityPreviewRenderer.sample()), [
+            kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 37.97, kCGImagePropertyGPSLatitudeRef: "N"],
+            kCGImagePropertyExifDictionary: [kCGImagePropertyExifLensModel: "SECRETLENS", kCGImagePropertyExifUserComment: "SECRETNOTE"],
+            kCGImagePropertyPNGDictionary: [kCGImagePropertyPNGDescription: "SECRETNOTE"],
+            kCGImagePropertyOrientation: 6,
+            kCGImageDestinationLossyCompressionQuality: 0.9,
+        ] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return url
+    }
+
+    private func pixels(of url: URL) throws -> Data {
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil)), 0, nil))
+        let context = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                              space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return Data(bytes: try XCTUnwrap(context.data), count: image.width * image.height * 4)
+    }
+
+    func testRemoveMetadataKeepsPixelsAndOrientation() throws {
+        let jpeg = try writeTaggedSample(named: "photo.jpg", type: .jpeg)
+        let png = try writeTaggedSample(named: "shot.png", type: .png)
+        let text = directory.appending(path: "notes.txt")
+        try "x".write(to: text, atomically: true, encoding: .utf8)
+
+        let result = try QuickActionConversionService().removeMetadata(urls: [jpeg, png, text])
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertEqual(result.successes.map(\.outputURL.lastPathComponent).sorted(), ["photo clean.jpg", "shot clean.png"])
+
+        for (source, output) in zip([jpeg, png], result.successes.map(\.outputURL)) {
+            let bytes = try Data(contentsOf: output)
+            XCTAssertNil(bytes.range(of: Data("SECRETLENS".utf8)), output.lastPathComponent)
+            XCTAssertNil(bytes.range(of: Data("SECRETNOTE".utf8)), output.lastPathComponent)
+            let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil)), 0, nil) as? [CFString: Any])
+            XCTAssertNil(properties[kCGImagePropertyGPSDictionary], output.lastPathComponent)
+            XCTAssertEqual(properties[kCGImagePropertyOrientation] as? Int, 6, output.lastPathComponent)
+            XCTAssertEqual(try pixels(of: output), try pixels(of: source), output.lastPathComponent)
+        }
+    }
+
+    func testRemoveMetadataRejectsTruncatedPNG() throws {
+        let png = try writeTaggedSample(named: "shot.png", type: .png)
+        let data = try Data(contentsOf: png)
+        try data.prefix(data.count / 2).write(to: png)
+        let result = try QuickActionConversionService().removeMetadata(urls: [png])
+        XCTAssertEqual(result.failures.map(\.sourceURL), [png])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appending(path: "shot clean.png").path))
+    }
 }

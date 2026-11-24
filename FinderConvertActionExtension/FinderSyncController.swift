@@ -91,6 +91,17 @@ class FinderSyncController: FIFinderSync {
             submenu.addItem(splitItem)
         }
 
+        // Lossless metadata removal for JPEG/PNG selections
+        let detector = FileTypeDetector()
+        if !containsFolder, selectedURLs.allSatisfy({ url in
+            (try? detector.detect(url: url)).map { MetadataRemoval.supports($0.detectedType) } ?? false
+        }) {
+            submenu.addItem(NSMenuItem.separator())
+            let cleanItem = NSMenuItem(title: "Remove Metadata (lossless)", action: #selector(removeMetadata(_:)), keyEquivalent: "")
+            cleanItem.target = self
+            submenu.addItem(cleanItem)
+        }
+
         submenu.addItem(NSMenuItem.separator())
         let configItem = NSMenuItem(title: "Configure Formats...", action: #selector(configureFormats(_:)), keyEquivalent: "")
         configItem.target = self
@@ -263,6 +274,11 @@ class FinderSyncController: FIFinderSync {
     @objc func mergePDFs(_ sender: Any?) {
         guard let urls = FIFinderSyncController.default().selectedItemURLs(), urls.count >= 2 else { return }
         performAction("merge_pdf", filePaths: urls.map { $0.path })
+    }
+
+    @objc func removeMetadata(_ sender: Any?) {
+        guard let urls = FIFinderSyncController.default().selectedItemURLs(), !urls.isEmpty else { return }
+        performAction("remove_metadata", filePaths: urls.map(\.path))
     }
 
     @objc func splitPDF(_ sender: Any?) {

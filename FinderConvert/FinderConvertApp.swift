@@ -658,6 +658,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 runMergePDF(urls: fileURLs)
                 return true
             }
+        } else if action == "remove_metadata" {
+            if let filePaths = json["filePaths"] as? [String] {
+                runRemoveMetadata(urls: filePaths.map { URL(fileURLWithPath: $0) })
+                return true
+            }
         } else if action == "split_pdf" {
             if let filePaths = json["filePaths"] as? [String], let first = filePaths.first {
                 runSplitPDF(url: URL(fileURLWithPath: first))
@@ -1180,6 +1185,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             } catch {
                 activeConversion = nil
                 logger.error("PDF merge failed: \(error.localizedDescription, privacy: .public)")
+                await postFailureNotification(message: error.localizedDescription)
+            }
+        }
+    }
+
+    func runRemoveMetadata(urls: [URL]) {
+        Task {
+            let fileDesc = urls.count == 1 ? "1 file" : "\(urls.count) files"
+            activeConversion = ActiveConversion(description: "Removing metadata from \(fileDesc)")
+            defer { activeConversion = nil }
+            do {
+                let result = try conversionService.removeMetadata(urls: urls)
+                let outputPaths = result.successes.map(\.outputURL.path)
+                ConversionHistoryStore.shared.add(ConversionHistoryEntry(
+                    action: "clean",
+                    inputFiles: result.successes.map(\.sourceURL.lastPathComponent),
+                    outputFiles: outputPaths,
+                    outputFormat: "Metadata removed",
+                    totalInputSize: result.successes.reduce(Int64(0)) { $0 + diskSize(of: $1.sourceURL) },
+                    totalOutputSize: outputPaths.reduce(Int64(0)) { $0 + diskSize(of: URL(fileURLWithPath: $1)) },
+                    success: result.failures.isEmpty,
+                    errorMessage: result.failures.first?.error.localizedDescription
+                ))
+                historyRefreshTrigger.toggle()
+                lastResults = result.successes
+                if result.failures.isEmpty {
+                    let count = result.successes.count
+                    await postCompletionNotification(title: "Metadata Removed", body: count == 1 ? "Saved \(result.successes[0].outputURL.lastPathComponent)." : "Saved \(count) clean copies.")
+                } else {
+                    await postFailureNotification(message: result.failures.first?.error.localizedDescription ?? "Some files could not be cleaned.")
+                }
+            } catch {
+                logger.error("Metadata removal failed: \(error.localizedDescription, privacy: .public)")
                 await postFailureNotification(message: error.localizedDescription)
             }
         }
@@ -2930,6 +2968,7 @@ struct HistoryTab: View {
         switch action {
         case "merge": return "doc.on.doc"
         case "split": return "scissors"
+        case "clean": return "eye.slash"
         default: return "arrow.triangle.2.circlepath"
         }
     }
