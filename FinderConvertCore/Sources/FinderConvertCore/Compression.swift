@@ -44,11 +44,9 @@ public enum Compression {
 
     // The same-format output for a file. MOV keeps its codec: iPhone HEVC
     // footage stays HEVC, as H.264 at equal quality would be larger
-    // Animated GIFs are left alone: the image engine writes one frame
     public static func target(for url: URL, type: DetectedFileType) async -> OutputFormat? {
         switch type {
         case .mov: return await isHEVC(url) ? .hevc : .mov
-        case .gif: return isAnimated(url) ? nil : .gif
         default: return sameFormat(type)
         }
     }
@@ -109,11 +107,16 @@ public enum Compression {
               let height = props[kCGImagePropertyPixelHeight] as? Int,
               width > 0, height > 0 else { return nil }
 
-        // Same scaling order as the image engine: percentage, then edge cap
-        var scale = settings.resizePercent > 0 && settings.resizePercent < 100 ? Double(settings.resizePercent) / 100 : 1
-        let longest = Double(max(width, height)) * scale
-        if settings.maxLongestEdge > 0, longest > Double(settings.maxLongestEdge) {
-            scale *= Double(settings.maxLongestEdge) / longest
+        let scale = NativeImageConversionEngine.resizeScale(width: width, height: height,
+                                                            percent: settings.resizePercent, maxEdge: settings.maxLongestEdge)
+
+        // Animation frames are encoded independently, so a handful spread
+        // across the clip predicts the whole file
+        let frameCount = CGImageSourceGetCount(source)
+        if output == .gif, frameCount > 1 {
+            let sampled = Array(Set((0..<8).map { $0 * frameCount / 8 })).sorted()
+            guard let data = try? NativeImageConversionEngine.encodeAnimatedGIF(source, scale: scale, frames: sampled) else { return nil }
+            return Int64(Double(data.count) * Double(frameCount) / Double(sampled.count))
         }
         let image: CGImage?
         if scale < 1 {
@@ -201,11 +204,6 @@ public enum Compression {
     // Size on disk, read fresh: URL.resourceValues caches per URL instance
     static func fileSize(_ url: URL) -> Int64? {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int).map(Int64.init)
-    }
-
-    private static func isAnimated(_ url: URL) -> Bool {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return false }
-        return CGImageSourceGetCount(source) > 1
     }
 
     private static func isHEVC(_ url: URL) async -> Bool {

@@ -119,16 +119,35 @@ final class CompressionTests: XCTestCase {
         XCTAssertEqual(Set(result.successes.map(\.outputURL.lastPathComponent)), ["shot compressed.png", "scan compressed.tiff"])
     }
 
-    func testAnimatedGIFIsLeftAlone() async throws {
+    func testAnimatedGIFKeepsEveryFrameAndShrinks() async throws {
+        // 12 noisy frames with mixed delays, looping forever
         let url = directory.appending(path: "anim.gif")
-        let image = try XCTUnwrap(QualityPreviewRenderer.sample())
-        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString, 2, nil))
-        CGImageDestinationAddImage(destination, image, nil)
-        CGImageDestinationAddImage(destination, image, nil)
+        let base = try XCTUnwrap(QualityPreviewRenderer.sample())
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString, 12, nil))
+        CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        for frame in 0..<12 {
+            let context = try XCTUnwrap(CGContext(data: nil, width: base.width, height: base.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+            context.draw(base, in: CGRect(x: frame * 4, y: 0, width: base.width, height: base.height))
+            CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()),
+                                       [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: frame.isMultiple(of: 2) ? 0.1 : 0.3]] as CFDictionary)
+        }
         XCTAssertTrue(CGImageDestinationFinalize(destination))
 
+        let estimate = await Compression.estimate(url: url, type: .gif, preset: PreferencesManager.shared.presetSettings(named: "Thumbnail"), allowProbe: false)
         let result = try await withPreset("Thumbnail") { try await QuickActionConversionService().compress(urls: [url]) }
-        XCTAssertEqual(result.skipped, [url])
+        let output = try XCTUnwrap(result.successes.first?.outputURL)
+        XCTAssertEqual(output.lastPathComponent, "anim compressed.gif")
+
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
+        XCTAssertEqual(CGImageSourceGetCount(source), 12)
+        let frame1 = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 1, nil) as? [CFString: Any])
+        let gif = try XCTUnwrap(frame1[kCGImagePropertyGIFDictionary] as? [CFString: Any])
+        XCTAssertEqual(try XCTUnwrap(gif[kCGImagePropertyGIFDelayTime] as? Double), 0.3, accuracy: 0.01)
+        XCTAssertEqual(frame1[kCGImagePropertyPixelWidth] as? Int, base.width / 4)
+        let after = Double(try XCTUnwrap(Compression.fileSize(output)))
+        XCTAssertLessThan(after, Double(try XCTUnwrap(Compression.fileSize(url))))
+        XCTAssertEqual(Double(try XCTUnwrap(estimate)), after, accuracy: after * 0.25)
     }
 
     // Two seconds of a stereo tone in the given file format

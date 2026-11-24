@@ -66,21 +66,30 @@ public actor NativeImageConversionEngine: ConversionEngine {
                 throw ConversionError.failedToDecodeImage
             }
 
+            // GIF to GIF is compression: keep every frame of an animation
+            if job.requestedOutput == .gif, CGImageSourceGetCount(source) > 1 {
+                let prefs = PreferencesManager.shared
+                let scale = Self.resizeScale(width: image.width, height: image.height,
+                                             percent: prefs.resizePercent(for: .gif), maxEdge: prefs.maxLongestEdge(for: .gif))
+                let data = try Self.encodeAnimatedGIF(source, scale: scale) { progress(0.05 + 0.8 * $0) }
+                let destinationURL = try naming.destinationURL(for: sourceURL, outputFormat: .gif, policy: job.destinationPolicy)
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appending(path: UUID().uuidString, directoryHint: .notDirectory).appendingPathExtension("gif")
+                defer { try? FileManager.default.removeItem(at: tempURL) }
+                try data.write(to: tempURL)
+                try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+                progress(1.0)
+                return ConversionResult(sourceURL: sourceURL, outputURL: destinationURL, outputFormat: .gif)
+            }
+
             // Apply per-format resize and longest-edge cap if configured
             // (except ICO, which is always rendered at the fixed 256x256
             // icon size)
             let prefs = PreferencesManager.shared
             if job.requestedOutput != .ico {
-                var scale = 1.0
-                let resizePercent = prefs.resizePercent(for: job.requestedOutput)
-                if resizePercent > 0 && resizePercent < 100 {
-                    scale = Double(resizePercent) / 100.0
-                }
-                let maxEdge = prefs.maxLongestEdge(for: job.requestedOutput)
-                let longest = Double(max(image.width, image.height)) * scale
-                if maxEdge > 0, longest > Double(maxEdge) {
-                    scale *= Double(maxEdge) / longest
-                }
+                let scale = Self.resizeScale(width: image.width, height: image.height,
+                                             percent: prefs.resizePercent(for: job.requestedOutput),
+                                             maxEdge: prefs.maxLongestEdge(for: job.requestedOutput))
                 if scale < 1, let resized = Self.scaled(image, by: scale) {
                     image = resized
                     logger.info("Resized image to \(resized.width)x\(resized.height)")
@@ -225,6 +234,46 @@ public actor NativeImageConversionEngine: ConversionEngine {
         }
         if let best { return best }
         return try encode(current, format: format, quality: startQuality, metadata: metadata)
+    }
+
+    // Resize percentage first, then the longest-edge cap
+    static func resizeScale(width: Int, height: Int, percent: Int, maxEdge: Int) -> Double {
+        var scale = percent > 0 && percent < 100 ? Double(percent) / 100 : 1
+        let longest = Double(max(width, height)) * scale
+        if maxEdge > 0, longest > Double(maxEdge) {
+            scale *= Double(maxEdge) / longest
+        }
+        return scale
+    }
+
+    // Every frame (or only `frames`, for size estimates) re-encoded with
+    // ImageIO, keeping frame delays and the loop count. Frames are redrawn
+    // into RGBA first: handing ImageIO the decoded indexed frames directly
+    // was up to 30x slower. ImageIO writes whole frames with no frame
+    // differencing, so dithered GIFs can come out larger; callers discard
+    // results that aren't smaller.
+    // ponytail: no size cap (maxOutputBytes) for animations; add a resize
+    // loop like fit() if wanted
+    static func encodeAnimatedGIF(_ source: CGImageSource, scale: Double, frames: [Int]? = nil,
+                                  progress: (Double) -> Void = { _ in }) throws -> Data {
+        let indices = frames ?? Array(0..<CGImageSourceGetCount(source))
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.gif.identifier as CFString, indices.count, nil) else {
+            throw ConversionError.failedToEncodeImage(.gif)
+        }
+        if let loop = (CGImageSourceCopyProperties(source, nil) as? [CFString: Any])?[kCGImagePropertyGIFDictionary] as? [CFString: Any] {
+            CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary: loop.filter { $0.key == kCGImagePropertyGIFLoopCount }] as CFDictionary)
+        }
+        for (done, index) in indices.enumerated() {
+            guard let frame = CGImageSourceCreateImageAtIndex(source, index, nil),
+                  let redrawn = scaled(frame, by: scale) else { throw ConversionError.failedToDecodeImage }
+            let gif = (CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any])?[kCGImagePropertyGIFDictionary] as? [CFString: Any] ?? [:]
+            let delays = gif.filter { [kCGImagePropertyGIFDelayTime, kCGImagePropertyGIFUnclampedDelayTime].contains($0.key) }
+            CGImageDestinationAddImage(destination, redrawn, [kCGImagePropertyGIFDictionary: delays] as CFDictionary)
+            progress(Double(done + 1) / Double(indices.count))
+        }
+        guard CGImageDestinationFinalize(destination) else { throw ConversionError.failedToEncodeImage(.gif) }
+        return output as Data
     }
 
     static func scaled(_ image: CGImage, by scale: Double) -> CGImage? {
