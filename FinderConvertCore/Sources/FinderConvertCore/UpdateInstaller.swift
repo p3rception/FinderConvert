@@ -6,6 +6,7 @@ public enum UpdateInstallError: LocalizedError {
     case downloadFailed
     case extractFailed
     case appNotFoundInArchive
+    case signatureMismatch
     case installFailed(String)
 
     public var errorDescription: String? {
@@ -14,6 +15,7 @@ public enum UpdateInstallError: LocalizedError {
         case .downloadFailed: "The update could not be downloaded."
         case .extractFailed: "The update archive could not be opened."
         case .appNotFoundInArchive: "The update archive is missing the app."
+        case .signatureMismatch: "The update is not signed by the same developer as this app. Download it manually from the release page."
         case .installFailed(let reason): "The update could not be installed: \(reason)"
         }
     }
@@ -54,6 +56,12 @@ public actor UpdateInstaller {
             throw UpdateInstallError.appNotFoundInArchive
         }
 
+        // Only swap in an app that satisfies the installed app's designated
+        // requirement (same bundle id, same signing identity). An ad-hoc
+        // signed install has a cdhash requirement no update can meet, so it
+        // never auto-updates
+        try verifySignature(of: newAppURL, matches: targetAppURL)
+
         // Downloads from URLSession normally carry no quarantine, but strip
         // defensively so Gatekeeper never blocks the swapped-in bundle
         try? runProcess("/usr/bin/xattr", ["-dr", "com.apple.quarantine", newAppURL.path],
@@ -87,6 +95,27 @@ public actor UpdateInstaller {
             if let app = findAppBundle(in: sub) { return app }
         }
         return nil
+    }
+
+    func verifySignature(of newApp: URL, matches installedApp: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        process.arguments = ["--display", "--requirements", "-", installedApp.path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+
+        let prefix = "designated => "
+        guard process.terminationStatus == 0,
+              let requirement = output.split(separator: "\n").first(where: { $0.hasPrefix(prefix) })?.dropFirst(prefix.count) else {
+            throw UpdateInstallError.signatureMismatch
+        }
+        try runProcess("/usr/bin/codesign",
+                       ["--verify", "--deep", "--strict", "--test-requirement", "=\(requirement)", newApp.path],
+                       orThrow: UpdateInstallError.signatureMismatch)
     }
 
     private func runProcess(_ launchPath: String, _ arguments: [String], orThrow error: UpdateInstallError) throws {

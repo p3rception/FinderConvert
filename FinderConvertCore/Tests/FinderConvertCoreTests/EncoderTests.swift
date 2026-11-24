@@ -244,4 +244,14 @@ final class EncoderTests: XCTestCase {
         let output = try await convert(epub, to: .pdf, with: EpubConversionEngine())
         XCTAssertGreaterThan(try XCTUnwrap(PDFDocument(url: output)).pageCount, 1)
     }
+
+    func testUpdateMustMatchTheInstalledSigner() async throws {
+        let installer = UpdateInstaller()
+        let calculator = URL(fileURLWithPath: "/System/Applications/Calculator.app")
+        try await installer.verifySignature(of: calculator, matches: calculator)
+        do {
+            try await installer.verifySignature(of: URL(fileURLWithPath: "/System/Applications/TextEdit.app"), matches: calculator)
+            XCTFail("a different app passed the signature check")
+        } catch UpdateInstallError.signatureMismatch {}
+    }
 }
