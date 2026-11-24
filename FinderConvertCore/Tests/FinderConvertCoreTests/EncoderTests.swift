@@ -346,4 +346,13 @@ final class EncoderTests: XCTestCase {
         XCTAssertTrue(html.contains("FIRST"))
         XCTAssertTrue(html.contains("src=\"data:image/png;base64,"))
     }
+
+    func testMarkdownLinksCannotBreakOutOfHref() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let markdown = directory.appending(path: "note.md")
+        try #"[x](a" onmouseover="alert(1))"#.write(to: markdown, atomically: true, encoding: .utf8)
+        let html = try String(contentsOf: try await convert(markdown, to: .html, with: DocumentConversionEngine()), encoding: .utf8)
+        XCTAssertFalse(html.contains(#"" onmouseover=""#))
+    }
 }
