@@ -124,9 +124,8 @@ public actor SvgConversionEngine: ConversionEngine {
                 let scale = 256.0 / Double(maxDim)
                 let newW = max(1, Int(Double(cgImage.width) * scale))
                 let newH = max(1, Int(Double(cgImage.height) * scale))
-                if let cs = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB),
-                   let ctx = CGContext(data: nil, width: newW, height: newH, bitsPerComponent: 8, bytesPerRow: 0,
-                                        space: cs, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) {
+                if let ctx = CGContext(data: nil, width: newW, height: newH, bitsPerComponent: 8, bytesPerRow: 0,
+                                        space: cgImage.rgbColorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) {
                     ctx.interpolationQuality = .high
                     ctx.setFillColor(NSColor.white.cgColor)
                     ctx.fill(CGRect(x: 0, y: 0, width: newW, height: newH))

@@ -230,9 +230,8 @@ public actor NativeImageConversionEngine: ConversionEngine {
     static func scaled(_ image: CGImage, by scale: Double) -> CGImage? {
         let newW = max(1, Int((Double(image.width) * scale).rounded()))
         let newH = max(1, Int((Double(image.height) * scale).rounded()))
-        guard let colorSpace = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB),
-              let ctx = CGContext(data: nil, width: newW, height: newH, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        guard let ctx = CGContext(data: nil, width: newW, height: newH, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: image.rgbColorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         ctx.interpolationQuality = .high
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: newW, height: newH))
         return ctx.makeImage()
@@ -243,16 +242,13 @@ public actor NativeImageConversionEngine: ConversionEngine {
             return image
         }
 
-        guard let colorSpace = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB) else {
-            throw ConversionError.failedToEncodeImage(.jpeg)
-        }
         guard let context = CGContext(
             data: nil,
             width: image.width,
             height: image.height,
             bitsPerComponent: 8,
             bytesPerRow: 0,
-            space: colorSpace,
+            space: image.rgbColorSpace,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
         ) else {
             throw ConversionError.failedToEncodeImage(.jpeg)
@@ -271,9 +267,8 @@ public actor NativeImageConversionEngine: ConversionEngine {
 
     // Aspect-fit the image centered on a fixed square canvas
     private func squareCanvas(_ image: CGImage, size: Int) throws -> CGImage {
-        guard let colorSpace = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+        guard let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: image.rgbColorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             throw ConversionError.failedToEncodeImage(.ico)
         }
         context.interpolationQuality = .high
@@ -290,15 +285,22 @@ public actor NativeImageConversionEngine: ConversionEngine {
     static func encodeWebP(_ image: CGImage, quality: Float) throws -> Data {
         let width = image.width
         let height = image.height
-        guard let colorSpace = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                                      space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: image.rgbColorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
             throw ConversionError.failedToEncodeImage(.webp)
         }
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         guard let data = context.data else { throw ConversionError.failedToEncodeImage(.webp) }
 
+        // Bitmap contexts only hold premultiplied alpha; libwebp wants straight alpha
         let rgbData = data.assumingMemoryBound(to: UInt8.self)
+        for i in stride(from: 0, to: width * height * 4, by: 4) {
+            let alpha = Int(rgbData[i + 3])
+            guard alpha > 0, alpha < 255 else { continue }
+            for channel in i..<i + 3 {
+                rgbData[channel] = UInt8(min(255, (Int(rgbData[channel]) * 255 + alpha / 2) / alpha))
+            }
+        }
         var output: UnsafeMutablePointer<UInt8>?
         let size = WebPEncodeRGBA(rgbData, Int32(width), Int32(height), Int32(width * 4), quality, &output)
         guard size > 0, let outputPtr = output else { throw ConversionError.failedToEncodeImage(.webp) }
@@ -311,5 +313,14 @@ public actor NativeImageConversionEngine: ConversionEngine {
         guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {
             throw ConversionError.invalidDestination
         }
+    }
+}
+
+extension CGImage {
+    // 8-bit RGBA bitmap contexts reject gray and CMYK spaces. RGB spaces
+    // (Display P3, Adobe RGB) are kept so wide-gamut sources stay wide
+    var rgbColorSpace: CGColorSpace {
+        if let colorSpace, colorSpace.model == .rgb { return colorSpace }
+        return CGColorSpace(name: CGColorSpace.sRGB)!
     }
 }

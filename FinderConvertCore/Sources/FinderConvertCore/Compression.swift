@@ -138,7 +138,7 @@ public enum Compression {
         let tileWidth = min(tile, image.width), tileHeight = min(tile, image.height)
         guard let context = CGContext(
             data: nil, width: tileWidth * columns, height: tileHeight * rows, bitsPerComponent: 8, bytesPerRow: 0,
-            space: image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!,
+            space: image.rgbColorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
         for row in 0..<rows {

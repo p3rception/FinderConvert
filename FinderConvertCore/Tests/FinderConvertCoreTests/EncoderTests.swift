@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreGraphics
+import ImageIO
 import XCTest
 @testable import FinderConvertCore
 
@@ -168,5 +169,30 @@ final class EncoderTests: XCTestCase {
         let preset = try JSONDecoder().decode(PresetSettings.self, from: legacy)
         XCTAssertEqual(preset.resizePercent, 50)
         XCTAssertNil(preset.maxLongestEdge)
+    }
+
+    func testWebPKeepsTransparency() throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+                                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 0.5)
+        context.fill(CGRect(x: 0, y: 0, width: 4, height: 8))
+        let webp = try NativeImageConversionEngine.encodeWebP(try XCTUnwrap(context.makeImage()), quality: 90)
+
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(webp as CFData, nil))
+        let decoded = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        context.clear(CGRect(x: 0, y: 0, width: 8, height: 8))
+        context.draw(decoded, in: CGRect(x: 0, y: 0, width: 8, height: 8))
+        let pixels = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        // Row-major from the top: pixel 0 is in the half-transparent red half, pixel 7 in the clear half
+        XCTAssertEqual(Double(pixels[3]), 128, accuracy: 8, "half-transparent alpha")
+        XCTAssertEqual(Double(pixels[0]), 128, accuracy: 8, "premultiplied red survives")
+        XCTAssertEqual(pixels[7 * 4 + 3], 0, "clear pixel stays clear")
+    }
+
+    func testWebPEncodesGrayscaleSource() throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 8,
+                                              space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue))
+        XCTAssertFalse(try NativeImageConversionEngine.encodeWebP(try XCTUnwrap(context.makeImage()), quality: 90).isEmpty)
     }
 }
