@@ -220,24 +220,37 @@ public actor DocumentConversionEngine: ConversionEngine {
         // Wait for load
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             class LoadDelegate: NSObject, WKNavigationDelegate {
-                let continuation: CheckedContinuation<Void, Error>
+                private var continuation: CheckedContinuation<Void, Error>?
                 private var loadedDocument = false
                 init(_ c: CheckedContinuation<Void, Error>) { self.continuation = c }
+                // Load callbacks and the timeout can both fire; only the first counts
+                func finish(_ error: Error? = nil) {
+                    if let error { continuation?.resume(throwing: error) } else { continuation?.resume() }
+                    continuation = nil
+                }
                 func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                              decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
                     decisionHandler(loadedDocument ? .cancel : .allow)
                     loadedDocument = true
                 }
                 func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-                    continuation.resume()
+                    finish()
                 }
                 func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-                    continuation.resume(throwing: error)
+                    finish(error)
+                }
+                func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+                    finish(error)
                 }
             }
             let delegate = LoadDelegate(continuation)
             objc_setAssociatedObject(webView, "delegate", delegate, .OBJC_ASSOCIATION_RETAIN)
             webView.navigationDelegate = delegate
+            // A slow remote image or stylesheet can stall didFinish indefinitely
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak webView, weak delegate] in
+                webView?.stopLoading()
+                delegate?.finish(ConversionError.filesystemError("The document took too long to load."))
+            }
         }
 
         // Let WebKit finish layout after the navigation callback fires
