@@ -1023,10 +1023,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                     return
                 }
 
-                let totalSize = urls.reduce(into: Int64(0)) { sum, url in
-                    let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                    sum += Int64(size)
-                }
+                let totalSize = urls.reduce(Int64(0)) { $0 + diskSize(of: $1) }
                 let isLarge = totalSize >= Self.largeFileThreshold
 
                 let fileDesc = urls.count == 1 ? "1 file" : "\(urls.count) files"
@@ -1048,9 +1045,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 let finalOutputPaths = applyRenames(renameMap, to: result)
 
                 // Record history
-                let outputSize = result.successes.reduce(into: Int64(0)) { sum, r in
-                    sum += Int64((try? FileManager.default.attributesOfItem(atPath: r.outputURL.path)[.size] as? Int) ?? 0)
-                }
+                let outputSize = finalOutputPaths.reduce(Int64(0)) { $0 + diskSize(of: URL(fileURLWithPath: $1)) }
                 ConversionHistoryStore.shared.add(ConversionHistoryEntry(
                     action: "convert",
                     inputFiles: urls.map { $0.lastPathComponent },
@@ -1101,6 +1096,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         return finalOutputPaths
     }
 
+    // Bytes in a file, or in every file under a folder (folder selections,
+    // multi-page PDF and multi-sheet XLSX outputs)
+    private func diskSize(of url: URL) -> Int64 {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey]) else { return 0 }
+        guard values.isDirectory == true else { return Int64(values.fileSize ?? 0) }
+        let files = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey])?.allObjects as? [URL] ?? []
+        return files.reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+    }
+
     // Same-format re-encode with the current (or temporarily applied preset)
     // settings. Always notifies: the result is worth knowing even when quick
     private func runCompression(for urls: [URL], renameMap: [URL: String]) async {
@@ -1121,9 +1125,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
 
         let finalOutputPaths = applyRenames(renameMap, to: result)
-        let size: (URL) -> Int64 = { Int64((try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? Int) ?? 0) }
-        let inputSize = result.successes.reduce(Int64(0)) { $0 + size($1.sourceURL) }
-        let outputSize = finalOutputPaths.reduce(Int64(0)) { $0 + size(URL(fileURLWithPath: $1)) }
+        let inputSize = result.successes.reduce(Int64(0)) { $0 + diskSize(of: $1.sourceURL) }
+        let outputSize = finalOutputPaths.reduce(Int64(0)) { $0 + diskSize(of: URL(fileURLWithPath: $1)) }
         ConversionHistoryStore.shared.add(ConversionHistoryEntry(
             action: "compress",
             inputFiles: urls.map { $0.lastPathComponent },
