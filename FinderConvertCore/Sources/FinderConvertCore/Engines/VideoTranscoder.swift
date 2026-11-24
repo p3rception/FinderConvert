@@ -107,16 +107,17 @@ public actor VideoTranscoder {
         public let audioBitRate: Int
     }
 
-    private var writer: AVAssetWriter?
-    private var reader: AVAssetReader?
     private var cancelled = false
 
     public init() {}
 
+    // Read by the pump queues, so cancelling never tears down the reader
+    // while copyNextSampleBuffer is running on another thread (that crashed)
+    private let stopRequested = StopFlag()
+
     public func cancel() {
         cancelled = true
-        reader?.cancelReading()
-        writer?.cancelWriting()
+        stopRequested.set()
     }
 
     private func isHDR(_ track: AVAssetTrack) async throws -> Bool {
@@ -286,9 +287,6 @@ public actor VideoTranscoder {
         }
 
         if cancelled { throw ConversionError.filesystemError("Conversion was cancelled.") }
-        self.writer = writer
-        self.reader = reader
-        defer { self.writer = nil; self.reader = nil }
 
         guard writer.startWriting() else {
             throw ConversionError.filesystemError(writer.error?.localizedDescription ?? "Could not start the video encoder.")
@@ -305,20 +303,24 @@ public actor VideoTranscoder {
         progress(0.05)
         let group = DispatchGroup()
         group.enter()
-        Self.pump(videoInput, from: videoOutput, label: "video-transcode", onSample: { buffer in
+        let stop = stopRequested
+        Self.pump(videoInput, from: videoOutput, label: "video-transcode", stop: stop, onSample: { buffer in
             guard totalSeconds > 0 else { return }
             let seconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(buffer)) - startSeconds
             progress(min(0.95, 0.05 + 0.9 * (seconds / totalSeconds)))
         }, completion: { group.leave() })
         if let audioPair {
             group.enter()
-            Self.pump(audioPair.input, from: audioPair.output, label: "audio-transcode", completion: { group.leave() })
+            Self.pump(audioPair.input, from: audioPair.output, label: "audio-transcode", stop: stop, completion: { group.leave() })
         }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             group.notify(queue: DispatchQueue(label: "transcode-done")) { continuation.resume() }
         }
 
         if cancelled || reader.status == .cancelled || writer.status == .cancelled {
+            // Both pumps have returned, so nothing is reading any more
+            reader.cancelReading()
+            writer.cancelWriting()
             throw ConversionError.filesystemError("Conversion was cancelled.")
         }
         if reader.status == .failed {
@@ -367,6 +369,7 @@ public actor VideoTranscoder {
         _ input: AVAssetWriterInput,
         from output: AVAssetReaderOutput,
         label: String,
+        stop: StopFlag,
         onSample: @escaping @Sendable (CMSampleBuffer) -> Void = { _ in },
         completion: @escaping @Sendable () -> Void
     ) {
@@ -374,7 +377,7 @@ public actor VideoTranscoder {
         input.requestMediaDataWhenReady(on: DispatchQueue(label: label)) {
             guard !finished else { return }
             while input.isReadyForMoreMediaData {
-                guard let buffer = output.copyNextSampleBuffer(), input.append(buffer) else {
+                guard !stop.isSet, let buffer = output.copyNextSampleBuffer(), input.append(buffer) else {
                     finished = true
                     input.markAsFinished()
                     completion()
@@ -384,6 +387,14 @@ public actor VideoTranscoder {
             }
         }
     }
+}
+
+// @unchecked Sendable: the flag is only touched under the lock
+final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
 }
 
 // Projects a clip's encoded size from a short slice taken from its middle,
