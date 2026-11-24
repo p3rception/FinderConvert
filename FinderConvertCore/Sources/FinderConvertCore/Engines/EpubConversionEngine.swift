@@ -99,7 +99,7 @@ public actor EpubConversionEngine: ConversionEngine {
 
         switch job.requestedOutput {
         case .pdf:
-            try await renderHTMLToPDF(html: combinedHTML, baseDir: tempDir, to: tempOutput)
+            try await DocumentConversionEngine.renderHTMLToPDF(html: combinedHTML, baseURL: tempDir, to: tempOutput)
         case .html:
             try combinedHTML.write(to: tempOutput, atomically: true, encoding: .utf8)
         case .txt:
@@ -195,28 +195,5 @@ public actor EpubConversionEngine: ConversionEngine {
             return String(html[bodyTagEnd.upperBound..<bodyEnd.lowerBound])
         }
         return html
-    }
-
-    @MainActor
-    private func renderHTMLToPDF(html: String, baseDir: URL, to outputURL: URL) async throws {
-        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 612, height: 792))
-        webView.loadHTMLString(html, baseURL: baseDir)
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            class LoadDelegate: NSObject, WKNavigationDelegate {
-                let cont: CheckedContinuation<Void, Error>
-                init(_ c: CheckedContinuation<Void, Error>) { cont = c }
-                func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { cont.resume() }
-                func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { cont.resume(throwing: error) }
-            }
-            let delegate = LoadDelegate(continuation)
-            objc_setAssociatedObject(webView, "delegate", delegate, .OBJC_ASSOCIATION_RETAIN)
-            webView.navigationDelegate = delegate
-        }
-
-        let config = WKPDFConfiguration()
-        config.rect = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let pdfData = try await webView.pdf(configuration: config)
-        try pdfData.write(to: outputURL)
     }
 }

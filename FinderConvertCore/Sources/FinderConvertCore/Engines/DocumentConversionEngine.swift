@@ -199,20 +199,18 @@ public actor DocumentConversionEngine: ConversionEngine {
 
     @MainActor
     private func renderHTMLToPDF(sourceURL: URL, to outputURL: URL, isMarkdown: Bool = false) async throws {
-        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 612, height: 792))
         let htmlData = try Data(contentsOf: sourceURL)
         guard let rawString = String(data: htmlData, encoding: .utf8) else {
             throw ConversionError.unreadableInput
         }
+        let htmlString = isMarkdown ? markdownToHTML(rawString) : rawString
+        try await Self.renderHTMLToPDF(html: htmlString, baseURL: sourceURL.deletingLastPathComponent(), to: outputURL)
+    }
 
-        let htmlString: String
-        if isMarkdown {
-            htmlString = markdownToHTML(rawString)
-        } else {
-            htmlString = rawString
-        }
-
-        webView.loadHTMLString(htmlString, baseURL: sourceURL.deletingLastPathComponent())
+    @MainActor
+    static func renderHTMLToPDF(html htmlString: String, baseURL: URL, to outputURL: URL) async throws {
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 612, height: 792))
+        webView.loadHTMLString(htmlString, baseURL: baseURL)
 
         // Wait for load
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreGraphics
 import ImageIO
+import PDFKit
 import XCTest
 @testable import FinderConvertCore
 
@@ -223,5 +224,24 @@ final class EncoderTests: XCTestCase {
 
         let output = try await convert(docx, to: .html, with: DocumentConversionEngine())
         XCTAssertTrue(try String(contentsOf: output, encoding: .utf8).contains("Hello from DOCX"))
+    }
+
+    func testEPUBToPDFPaginates() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let book = directory.appending(path: "book")
+        try FileManager.default.createDirectory(at: book.appending(path: "META-INF"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "application/epub+zip".write(to: book.appending(path: "mimetype"), atomically: true, encoding: .utf8)
+        try #"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#
+            .write(to: book.appending(path: "META-INF/container.xml"), atomically: true, encoding: .utf8)
+        try #"<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="c1" href="c1.xhtml"/></manifest><spine><itemref idref="c1"/></spine></package>"#
+            .write(to: book.appending(path: "content.opf"), atomically: true, encoding: .utf8)
+        let paragraphs = String(repeating: "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>", count: 400)
+        try "<html><body>\(paragraphs)</body></html>".write(to: book.appending(path: "c1.xhtml"), atomically: true, encoding: .utf8)
+        let epub = directory.appending(path: "book.epub")
+        try run("/usr/bin/zip", ["-qr", epub.path, "."], in: book)
+
+        let output = try await convert(epub, to: .pdf, with: EpubConversionEngine())
+        XCTAssertGreaterThan(try XCTUnwrap(PDFDocument(url: output)).pageCount, 1)
     }
 }
