@@ -13,7 +13,7 @@ Open an issue with the bug report template. The most useful reports include:
 
 ## Building from source
 
-Requirements: macOS 14+, Xcode 16+, Swift 6.
+Requirements: macOS 14+ on Apple Silicon, Xcode 16+, Swift 6.
 
 ```bash
 bash scripts/build-and-sign.sh   # build, sign, install to /Applications, register the extension

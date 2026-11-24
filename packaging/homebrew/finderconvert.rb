@@ -18,6 +18,7 @@ cask "finderconvert" do
   homepage "https://github.com/turman17/FinderConvert"
 
   depends_on macos: :sonoma
+  depends_on arch: :arm64
 
   app "FinderConvert.app"
 

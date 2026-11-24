@@ -27,6 +27,8 @@ HEIC → JPG · WebP → PNG · MOV → MP4 · video → MP3 · PDF → JPG/PNG 
 
 ## Install
 
+Requires macOS 14 or later on an Apple Silicon Mac. Intel Macs are not supported.
+
 ```bash
 brew install --cask turman17/tap/finderconvert
 xattr -dr com.apple.quarantine /Applications/FinderConvert.app
@@ -96,7 +98,7 @@ Each format has configurable options via the slider icon in the Formats tab:
 
 ## Building from Source
 
-Requirements: macOS 14+, Xcode 16+, Swift 6.
+Requirements: macOS 14+ on Apple Silicon, Xcode 16+, Swift 6.
 
 ```bash
 bash scripts/build-and-sign.sh
