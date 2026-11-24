@@ -1,4 +1,5 @@
 import AVFoundation
+import AppKit
 import CoreGraphics
 import ImageIO
 import PDFKit
@@ -354,5 +355,18 @@ final class EncoderTests: XCTestCase {
         try #"[x](a" onmouseover="alert(1))"#.write(to: markdown, atomically: true, encoding: .utf8)
         let html = try String(contentsOf: try await convert(markdown, to: .html, with: DocumentConversionEngine()), encoding: .utf8)
         XCTAssertFalse(html.contains(#"" onmouseover=""#))
+    }
+
+    func testMarkdownToDOCXRendersMarkdown() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let markdown = directory.appending(path: "note.md")
+        try "# Title\n\nSome **bold** text".write(to: markdown, atomically: true, encoding: .utf8)
+        let docx = try await convert(markdown, to: .docx, with: DocxWriterEngine())
+        let text = try NSAttributedString(url: docx, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML],
+                                          documentAttributes: nil).string
+        XCTAssertTrue(text.contains("Title"))
+        XCTAssertFalse(text.contains("#"))
+        XCTAssertFalse(text.contains("**"))
     }
 }

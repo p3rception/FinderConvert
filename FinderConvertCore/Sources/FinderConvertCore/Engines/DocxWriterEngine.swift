@@ -71,7 +71,7 @@ public actor DocxWriterEngine: ConversionEngine {
         var effectiveType = type
         if type == .markdown {
             let markdown = String(data: data, encoding: .utf8) ?? ""
-            let html = wrapPlainHTML(markdown)
+            let html = DocumentConversionEngine().markdownToHTML(markdown)
             data = html.data(using: .utf8) ?? data
             effectiveType = .html
         }
@@ -91,17 +91,6 @@ public actor DocxWriterEngine: ConversionEngine {
         ]
 
         return try NSAttributedString(data: data, options: options, documentAttributes: nil)
-    }
-
-    private func wrapPlainHTML(_ text: String) -> String {
-        let escaped = text
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-        let paragraphs = escaped.components(separatedBy: "\n")
-            .map { "<p>\($0)</p>" }
-            .joined(separator: "\n")
-        return "<html><body>\(paragraphs)</body></html>"
     }
 
     // MARK: - DOCX Writing

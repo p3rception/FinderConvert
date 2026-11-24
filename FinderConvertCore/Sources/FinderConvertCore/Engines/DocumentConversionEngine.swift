@@ -316,7 +316,7 @@ public actor DocumentConversionEngine: ConversionEngine {
 
     // MARK: - Markdown
 
-    nonisolated private func markdownToHTML(
+    nonisolated func markdownToHTML(
         _ markdown: String,
         style: MarkdownStyle = PreferencesManager.shared.markdownStyle
     ) -> String {
