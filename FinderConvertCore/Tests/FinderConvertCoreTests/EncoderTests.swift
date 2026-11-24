@@ -391,4 +391,44 @@ final class EncoderTests: XCTestCase {
             XCTAssertEqual(seconds, 2.0, accuracy: 0.1, "\(output)")
         }
     }
+
+    func testDateFormatCodesAreRecognised() {
+        let cases: [(String, SpreadsheetConversionEngine.DateKind?)] = [
+            ("yyyy-mm-dd", .date), ("d/m/yy", .date), ("mmm yyyy", .date), ("[$-409]mmmm d, yyyy", .date),
+            ("h:mm:ss", .time), ("[h]:mm", .time), ("yyyy-mm-dd hh:mm", .dateTime),
+            ("0.00", nil), ("#,##0", nil), ("General", nil), (#"0.0 "days""#, nil), (#"[Red]0.00"#, nil),
+        ]
+        for (code, kind) in cases {
+            XCTAssertEqual(SpreadsheetConversionEngine.dateKind(ofFormatCode: code), kind, code)
+        }
+        XCTAssertEqual(SpreadsheetConversionEngine.formatDate(serial: 45306, kind: .date, uses1904: false), "2024-01-15")
+        XCTAssertEqual(SpreadsheetConversionEngine.formatDate(serial: 43844, kind: .date, uses1904: true), "2024-01-15")
+        XCTAssertEqual(SpreadsheetConversionEngine.formatDate(serial: 0.6041666667, kind: .time, uses1904: false), "14:30:00")
+    }
+
+    func testXLSXDatesExportAsISO() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let book = directory.appending(path: "book")
+        for folder in ["_rels", "xl/_rels", "xl/worksheets"] {
+            try FileManager.default.createDirectory(at: book.appending(path: folder), withIntermediateDirectories: true)
+        }
+        let parts: [String: String] = [
+            "[Content_Types].xml": #"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>"#,
+            "_rels/.rels": #"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+            "xl/workbook.xml": #"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            "xl/_rels/workbook.xml.rels": #"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            // Styles: 0 General, 1 built-in date (14), 2 custom date-time (164), 3 plain decimal (2)
+            "xl/styles.xml": #"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd hh:mm"/></numFmts><cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="2"/></cellXfs></styleSheet>"#,
+            "xl/worksheets/sheet1.xml": #"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" s="1"><v>45306</v></c><c r="B1" s="2"><v>45306.6041666667</v></c><c r="C1" s="3"><v>45306</v></c><c r="D1"><v>7</v></c></row></sheetData></worksheet>"#,
+        ]
+        for (path, xml) in parts {
+            try xml.write(to: book.appending(path: path), atomically: true, encoding: .utf8)
+        }
+        let xlsx = directory.appending(path: "dates.xlsx")
+        try run("/usr/bin/zip", ["-qr", xlsx.path, "."], in: book)
+
+        let csv = try String(contentsOf: try await convert(xlsx, to: .csv, with: SpreadsheetConversionEngine()), encoding: .utf8)
+        XCTAssertEqual(csv.trimmingCharacters(in: .whitespacesAndNewlines), "2024-01-15,2024-01-15 14:30:00,45306,7")
+    }
 }

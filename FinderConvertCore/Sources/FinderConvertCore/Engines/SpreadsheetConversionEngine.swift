@@ -338,12 +338,16 @@ public actor SpreadsheetConversionEngine: ConversionEngine {
             throw ConversionError.filesystemError("No worksheets found in XLSX file.")
         }
 
+        let dateStyles = Self.dateStyles(in: tempDir.appendingPathComponent("xl/styles.xml"))
+        let workbookXML = (try? String(contentsOf: workbookURL, encoding: .utf8)) ?? ""
+        let uses1904 = workbookXML.range(of: #"date1904="(1|true)""#, options: .regularExpression) != nil
+
         // Parse each sheet
         var sheets: [ParsedSheet] = []
         for entry in sheetEntries {
             guard let sheetData = try? Data(contentsOf: entry.url),
                   let sheetDoc = try? XMLDocument(data: sheetData, options: []) else { continue }
-            let rows = try parseSheetXML(doc: sheetDoc, sharedStrings: sharedStrings)
+            let rows = try parseSheetXML(doc: sheetDoc, sharedStrings: sharedStrings, dateStyles: dateStyles, uses1904: uses1904)
             if !rows.isEmpty {
                 sheets.append(ParsedSheet(name: entry.name, rows: rows))
             }
@@ -358,7 +362,7 @@ public actor SpreadsheetConversionEngine: ConversionEngine {
         (element.children ?? []).compactMap { $0 as? XMLElement }.filter { $0.localName == localName }
     }
 
-    private func parseSheetXML(doc: XMLDocument, sharedStrings: [String]) throws -> [[String]] {
+    private func parseSheetXML(doc: XMLDocument, sharedStrings: [String], dateStyles: [Int: DateKind], uses1904: Bool) throws -> [[String]] {
         let rowNodes = try doc.nodes(forXPath: "//*[local-name()='row']")
         var rows: [[String]] = []
         var maxCol = 0
@@ -389,8 +393,16 @@ public actor SpreadsheetConversionEngine: ConversionEngine {
                         value = vStr
                     }
                 } else {
-                    // Number or other value
-                    value = childElements(of: cell, localName: "v").first?.stringValue ?? ""
+                    // Number or other value. Dates are numbers too (days
+                    // since 1900), told apart only by the cell's style
+                    let raw = childElements(of: cell, localName: "v").first?.stringValue ?? ""
+                    if type == nil || type == "n",
+                       let style = cell.attribute(forName: "s")?.stringValue.flatMap(Int.init),
+                       let kind = dateStyles[style], let serial = Double(raw) {
+                        value = Self.formatDate(serial: serial, kind: kind, uses1904: uses1904)
+                    } else {
+                        value = raw
+                    }
                 }
 
                 rowData.append((colIndex, value))
@@ -420,6 +432,79 @@ public actor SpreadsheetConversionEngine: ConversionEngine {
         }
 
         return rows
+    }
+
+    enum DateKind { case date, time, dateTime }
+
+    // Built-in number formats that show dates or times (ECMA-376 18.8.30,
+    // plus the East Asian date ids 27-36 and 50-58)
+    private static let builtInDateFormats: [Int: DateKind] = {
+        var formats: [Int: DateKind] = [14: .date, 15: .date, 16: .date, 17: .date, 18: .time, 19: .time, 20: .time, 21: .time,
+                                        22: .dateTime, 45: .time, 46: .time, 47: .time]
+        for id in Array(27...36) + Array(50...58) { formats[id] = .date }
+        return formats
+    }()
+
+    // Style index (the cell's s attribute) -> date kind, for every cellXfs
+    // entry whose number format shows a date or time
+    static func dateStyles(in stylesURL: URL) -> [Int: DateKind] {
+        guard let data = try? Data(contentsOf: stylesURL), let doc = try? XMLDocument(data: data) else { return [:] }
+        var custom: [Int: DateKind] = [:]
+        for case let element as XMLElement in (try? doc.nodes(forXPath: "//*[local-name()='numFmt']")) ?? [] {
+            guard let id = element.attribute(forName: "numFmtId")?.stringValue.flatMap(Int.init),
+                  let code = element.attribute(forName: "formatCode")?.stringValue,
+                  let kind = dateKind(ofFormatCode: code) else { continue }
+            custom[id] = kind
+        }
+        let xfs = ((try? doc.nodes(forXPath: "//*[local-name()='cellXfs']/*[local-name()='xf']")) ?? []).compactMap { $0 as? XMLElement }
+        var styles: [Int: DateKind] = [:]
+        for (index, xf) in xfs.enumerated() {
+            guard let id = xf.attribute(forName: "numFmtId")?.stringValue.flatMap(Int.init),
+                  let kind = custom[id] ?? builtInDateFormats[id] else { continue }
+            styles[index] = kind
+        }
+        return styles
+    }
+
+    // A custom format is a date/time format when, outside quoted text,
+    // escapes and [color]/[$-locale] sections, it uses y/d (date) or h/s
+    // (time; [h] is elapsed hours). "m" next to h or s is minutes, alone it
+    // is months
+    static func dateKind(ofFormatCode code: String) -> DateKind? {
+        let section = code.split(separator: ";", maxSplits: 1).first.map(String.init) ?? code
+        let bare = section
+            .replacingOccurrences(of: #""[^"]*""#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\\."#, with: "", options: .regularExpression)
+            .lowercased()
+            .replacingOccurrences(of: #"\[([hms]+)\]"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\[[^\]]*\]"#, with: "", options: .regularExpression)
+        guard bare != "general" else { return nil }
+        let hasDate = bare.contains("y") || bare.contains("d")
+        let hasTime = bare.contains("h") || bare.contains("s")
+        switch (hasDate || (bare.contains("m") && !hasTime), hasTime) {
+        case (true, true): return .dateTime
+        case (true, false): return .date
+        case (false, true): return .time
+        default: return nil
+        }
+    }
+
+    // ISO 8601, unambiguous in every locale. Serials count days from
+    // 1899-12-30 (which absorbs Excel's fictional 1900-02-29 for every date
+    // after it) or, in the 1904 system, from 1904-01-01.
+    // ponytail: serials before 1900-03-01 come out one day early
+    static func formatDate(serial: Double, kind: DateKind, uses1904: Bool) -> String {
+        let unixDays = serial - (uses1904 ? 24107 : 25569)
+        let date = Date(timeIntervalSince1970: (unixDays * 86_400).rounded())
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        switch kind {
+        case .date: formatter.dateFormat = "yyyy-MM-dd"
+        case .time: formatter.dateFormat = "HH:mm:ss"
+        case .dateTime: formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        }
+        return formatter.string(from: date)
     }
 
     private func columnIndex(from cellRef: String) -> Int {
