@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import OSLog
 import PDFKit
+import UniformTypeIdentifiers
 import WebKit
 
 public actor EpubConversionEngine: ConversionEngine {
@@ -84,7 +85,10 @@ public actor EpubConversionEngine: ConversionEngine {
         for (i, file) in contentFiles.enumerated() {
             if let content = try? String(contentsOf: file, encoding: .utf8) {
                 // Extract body content from XHTML
-                let body = extractBody(from: content)
+                var body = extractBody(from: content)
+                if job.requestedOutput != .txt {
+                    body = Self.inlineImages(in: body, chapter: file, book: tempDir)
+                }
                 if i > 0 { combinedHTML += "<div class=\"chapter-break\"></div>\n" }
                 combinedHTML += body + "\n"
             }
@@ -122,6 +126,28 @@ public actor EpubConversionEngine: ConversionEngine {
     }
 
     public func cancel(jobID: UUID) async {}
+
+    // Manifest hrefs are URL references: "Text/chapter%201.xhtml#start"
+    static func filePath(fromHref href: String) -> String {
+        let path = href.split(separator: "#", maxSplits: 1).first.map(String.init) ?? href
+        return path.removingPercentEncoding ?? path
+    }
+
+    // Chapter images are relative to the chapter file and live in a temp
+    // folder that is deleted after conversion, so embed them as data URIs.
+    // Remote and data: sources stay as they are
+    static func inlineImages(in html: String, chapter: URL, book: URL) -> String {
+        let source = /(<(?:img|image)\b[^>]*?\b(?:src|xlink:href|href)\s*=\s*)(["'])(.*?)\2/.ignoresCase()
+        return html.replacing(source) { match in
+            let (_, prefix, quote, reference) = match.output
+            let original = String(match.output.0)
+            guard !reference.contains(":"),
+                  let file = resolved(chapter.deletingLastPathComponent().appendingPathComponent(filePath(fromHref: String(reference))), inside: book),
+                  let data = try? Data(contentsOf: file) else { return original }
+            let mime = UTType(filenameExtension: file.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            return "\(prefix)\(quote)data:\(mime);base64,\(data.base64EncodedString())\(quote)"
+        }
+    }
 
     // The book's real path, or nil when a "../" href or a symlink in the zip
     // points outside the extraction folder. realpath follows the kernel's
@@ -175,7 +201,7 @@ public actor EpubConversionEngine: ConversionEngine {
             guard let element = spineItem as? XMLElement,
                   let idref = element.attribute(forName: "idref")?.stringValue,
                   let href = manifest[idref] else { continue }
-            let fileURL = opfDir.appendingPathComponent(href)
+            let fileURL = opfDir.appendingPathComponent(Self.filePath(fromHref: href))
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 files.append(fileURL)
             }

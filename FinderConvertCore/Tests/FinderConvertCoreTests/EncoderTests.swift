@@ -332,4 +332,18 @@ final class EncoderTests: XCTestCase {
         XCTAssertTrue(xml.contains("<v>4.5</v>"))
         XCTAssertTrue(xml.contains(">ab</t>"))
     }
+
+    func testEPUBDecodesHrefsAndEmbedsImages() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pixel = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
+        try FileManager.default.createDirectory(at: directory.appending(path: "book/Images"), withIntermediateDirectories: true)
+        try pixel.write(to: directory.appending(path: "book/Images/dot.png"))
+        let epub = try makeEPUB(in: directory, chapters: ["chapter%201.xhtml"],
+                                files: ["chapter 1.xhtml": #"<html><body><p>FIRST</p><img src="Images/dot.png"/></body></html>"#])
+
+        let html = try String(contentsOf: try await convert(epub, to: .html, with: EpubConversionEngine()), encoding: .utf8)
+        XCTAssertTrue(html.contains("FIRST"))
+        XCTAssertTrue(html.contains("src=\"data:image/png;base64,"))
+    }
 }
