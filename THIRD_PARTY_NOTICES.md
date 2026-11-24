@@ -15,10 +15,10 @@ FinderConvert bundles the following third-party libraries. Their use is subject 
 
 ### LGPL Distribution Notes
 
-LAME is linked as a dynamic library (dylib) in compliance with the LGPL. Under the terms of the LGPL v2 (or later):
+LAME is linked statically (`FinderConvertCore/Sources/CLame/libmp3lame.a`). Under the terms of the LGPL v2 (or later):
 
 1. You may obtain the complete source code for LAME from the URL above.
-2. FinderConvert links against LAME dynamically, allowing end users to replace the bundled LAME library with a compatible version of their choice.
+2. FinderConvert's complete source code is available in this repository under GPL-3.0, so you can rebuild the app against a modified LAME by replacing `libmp3lame.a` and `include/lame.h`.
 3. This notice constitutes the required prominent notice that the library is used in the work and that the library and its use are covered by the LGPL.
 
 ---
