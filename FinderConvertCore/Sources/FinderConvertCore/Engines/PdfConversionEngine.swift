@@ -15,7 +15,7 @@ public actor PdfConversionEngine: ConversionEngine {
         // PDF to Image
         if input == .pdf {
             switch output {
-            case .jpeg, .png, .heic, .tiff:
+            case .jpeg, .png, .heic, .tiff, .pdf:
                 return true
             default:
                 return false
@@ -57,6 +57,10 @@ public actor PdfConversionEngine: ConversionEngine {
                 // PDF -> Images (all pages)
                 guard let pdfDocument = PDFDocument(url: sourceURL), pdfDocument.pageCount > 0 else {
                     throw ConversionError.failedToDecodeImage
+                }
+
+                if job.requestedOutput == .pdf {
+                    return try compress(pdfDocument, from: sourceURL, policy: job.destinationPolicy, progress: progress)
                 }
 
                 let ext = job.requestedOutput.preferredExtension
@@ -178,6 +182,32 @@ public actor PdfConversionEngine: ConversionEngine {
         guard CGImageDestinationFinalize(destination) else {
             throw ConversionError.failedToEncodeImage(format)
         }
+    }
+
+    // PDF to PDF is compression. Images are re-encoded as JPEG at screen
+    // resolution (about 144 dpi); text and vector art are left as they are
+    static var compressionOptions: [PDFDocumentWriteOption: Any] {
+        [.saveImagesAsJPEGOption: true, .optimizeImagesForScreenOption: true]
+    }
+
+    private func compress(_ document: PDFDocument, from sourceURL: URL, policy: DestinationPolicy,
+                          progress: @Sendable (Double) -> Void) throws -> ConversionResult {
+        // Writing an encrypted PDF back out would drop its password and
+        // permission restrictions
+        guard !document.isEncrypted else {
+            throw ConversionError.filesystemError("Password-protected PDFs can't be compressed.")
+        }
+        let destinationURL = try naming.destinationURL(for: sourceURL, outputFormat: .pdf, policy: policy)
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("pdf")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        guard document.write(to: tempURL, withOptions: Self.compressionOptions) else {
+            throw ConversionError.failedToEncodeImage(.pdf)
+        }
+        try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+        progress(1.0)
+        return ConversionResult(sourceURL: sourceURL, outputURL: destinationURL, outputFormat: .pdf)
     }
 
     public func cancel(jobID: UUID) async {

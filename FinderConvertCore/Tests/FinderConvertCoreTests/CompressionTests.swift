@@ -1,6 +1,8 @@
+import AppKit
 import AVFoundation
 import CoreGraphics
 import ImageIO
+import PDFKit
 import UniformTypeIdentifiers
 import XCTest
 @testable import FinderConvertCore
@@ -29,10 +31,10 @@ final class CompressionTests: XCTestCase {
     }
 
     func testOnlyFormatsWithSameFormatEncodersCompress() {
-        for type: DetectedFileType in [.jpeg, .png, .tiff, .gif, .bmp, .mov, .mp3, .wav, .flac] {
+        for type: DetectedFileType in [.jpeg, .png, .tiff, .gif, .bmp, .mov, .mp3, .wav, .flac, .pdf] {
             XCTAssertTrue(Compression.isCompressible(type), type.rawValue)
         }
-        for type: DetectedFileType in [.svg, .ogg, .webm, .pdf] {
+        for type: DetectedFileType in [.svg, .ogg, .webm, .docx] {
             XCTAssertFalse(Compression.isCompressible(type), type.rawValue)
         }
     }
@@ -175,5 +177,60 @@ final class CompressionTests: XCTestCase {
         let email = try XCTUnwrap(estimate.estimates["Email Friendly"])
         XCTAssertLessThanOrEqual(current, estimate.sourceBytes)
         XCTAssertLessThan(email, current)
+    }
+
+    // Two pages, each a lossless 2000x1500 noisy photo (~400 dpi on the page)
+    // under a line of real text, like a phone scan with an OCR layer
+    private func writePhotoPDF(named name: String) throws -> URL {
+        let url = directory.appending(path: name)
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let pdf = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &box, nil))
+        let base = try XCTUnwrap(QualityPreviewRenderer.sample())
+        for page in 1...2 {
+            let photo = try XCTUnwrap(CGContext(data: nil, width: 2000, height: 1500, bitsPerComponent: 8, bytesPerRow: 0,
+                                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+            photo.draw(base, in: CGRect(x: 0, y: 0, width: 2000, height: 1500))
+            let pixels = try XCTUnwrap(photo.data).assumingMemoryBound(to: UInt8.self)
+            var seed = UInt32(page)
+            for i in stride(from: 0, to: 2000 * 1500 * 4, by: 4) {
+                seed = seed &* 1664525 &+ 1013904223
+                pixels[i] &+= UInt8(seed >> 28)
+            }
+            pdf.beginPDFPage(nil)
+            pdf.draw(try XCTUnwrap(photo.makeImage()), in: CGRect(x: 36, y: 300, width: 540, height: 405))
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: pdf, flipped: false)
+            ("Searchable page \(page)" as NSString).draw(at: CGPoint(x: 36, y: 250), withAttributes: [.font: NSFont.systemFont(ofSize: 18)])
+            pdf.endPDFPage()
+        }
+        pdf.closePDF()
+        return url
+    }
+
+    func testPDFCompressionShrinksImagesAndKeepsText() async throws {
+        let source = try writePhotoPDF(named: "scan.pdf")
+        let estimate = await Compression.estimate(url: source, type: .pdf, preset: nil, allowProbe: false)
+        let result = try await QuickActionConversionService().compress(urls: [source])
+
+        let output = try XCTUnwrap(result.successes.first?.outputURL)
+        XCTAssertEqual(output.lastPathComponent, "scan compressed.pdf")
+        let before = try XCTUnwrap(Compression.fileSize(source)), after = try XCTUnwrap(Compression.fileSize(output))
+        XCTAssertLessThan(after, before / 4)
+        let document = try XCTUnwrap(PDFDocument(url: output))
+        XCTAssertEqual(document.pageCount, 2)
+        XCTAssertTrue(try XCTUnwrap(document.string).contains("Searchable page 2"))
+        // The estimate is the same in-memory write, so it should land close
+        XCTAssertEqual(Double(try XCTUnwrap(estimate)), Double(after), accuracy: Double(after) * 0.05)
+    }
+
+    func testPasswordProtectedPDFIsNotCompressed() async throws {
+        let plain = try writePhotoPDF(named: "plain.pdf")
+        let locked = directory.appending(path: "locked.pdf")
+        XCTAssertTrue(try XCTUnwrap(PDFDocument(url: plain)).write(to: locked, withOptions: [.userPasswordOption: "secret", .ownerPasswordOption: "owner"]))
+
+        let result = try await QuickActionConversionService().compress(urls: [locked])
+        XCTAssertTrue(result.successes.isEmpty)
+        XCTAssertEqual(result.failures.map(\.sourceURL), [locked])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appending(path: "locked compressed.pdf").path))
     }
 }

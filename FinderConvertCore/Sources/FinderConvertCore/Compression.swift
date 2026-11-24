@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import ImageIO
+import PDFKit
 
 // Compression re-encodes a file into its own format with smaller settings.
 // The engines already handle same-format conversions; this decides which
@@ -12,8 +13,9 @@ public enum Compression {
     public static let outputSuffix = " compressed"
 
     // Every image and audio format FinderConvert can write back in its own
-    // format, plus MP4/MOV. Lossless formats shrink through palette PNGs,
-    // LZW TIFFs, resizing, or a lower sample rate and channel count
+    // format, plus MP4/MOV and PDF. Lossless formats shrink through palette
+    // PNGs, LZW TIFFs, resizing, or a lower sample rate and channel count;
+    // PDFs through re-encoding their images
     public static func isCompressible(_ type: DetectedFileType) -> Bool {
         sameFormat(type) != nil
     }
@@ -35,6 +37,7 @@ public enum Compression {
         case .flac: .flac
         case .mp4: .mp4
         case .mov: .mov
+        case .pdf: .pdf
         default: nil
         }
     }
@@ -81,7 +84,9 @@ public enum Compression {
     public static func estimate(url: URL, type: DetectedFileType, preset: PresetSettings?, allowProbe: Bool = true) async -> Int64? {
         guard let output = await target(for: url, type: type) else { return nil }
         let estimate: Int64?
-        if type.category == .image {
+        if type == .pdf {
+            estimate = pdfEstimate(url: url)
+        } else if type.category == .image {
             estimate = await imageEstimate(url: url, output: output, preset: preset)
         } else if output.supportsAudioChannels {
             estimate = await losslessAudioEstimate(url: url, output: output, preset: preset)
@@ -150,6 +155,18 @@ public enum Compression {
             }
         }
         return context.makeImage()
+    }
+
+    // PDFs share images across pages and mix scans with text, so any formula
+    // or one-page sample misjudges them: compress in memory and measure.
+    // That takes about 1 s for 60 MB, so bigger files go without an estimate
+    static let maxEstimatedPDFBytes: Int64 = 25_000_000
+
+    private static func pdfEstimate(url: URL) -> Int64? {
+        guard let size = fileSize(url), size <= maxEstimatedPDFBytes,
+              let document = PDFDocument(url: url), !document.isEncrypted,
+              let data = document.dataRepresentation(options: PdfConversionEngine.compressionOptions) else { return nil }
+        return Int64(data.count)
     }
 
     // WAV/AIFF/FLAC scale with sample rate, channels and bit depth (output is

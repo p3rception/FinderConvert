@@ -1116,7 +1116,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         do {
             result = try await conversionService.compress(urls: urls)
         } catch ConversionError.unsupportedSelection {
-            await postCompletionNotification(title: "Nothing to compress", body: "Compress works on images (except SVG), MP4 and MOV videos, and audio (except OGG).")
+            await postCompletionNotification(title: "Nothing to compress", body: "Compress works on images (except SVG), PDFs, audio (except OGG) and MP4 or MOV videos.")
             return
         } catch {
             logger.error("Compression failed: \(error.localizedDescription, privacy: .public)")
