@@ -369,4 +369,26 @@ final class EncoderTests: XCTestCase {
         XCTAssertFalse(text.contains("#"))
         XCTAssertFalse(text.contains("**"))
     }
+
+    func testAudioEncodersKeepTheWholeClip() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let wav = directory.appending(path: "tone.wav")
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 88_200))
+        buffer.frameLength = 88_200
+        for channel in 0..<2 {
+            for frame in 0..<88_200 { buffer.floatChannelData![channel][frame] = Float(sin(Double(frame) * 0.05) * 0.5) }
+        }
+        do {
+            let file = try AVAudioFile(forWriting: wav, settings: format.settings)
+            try file.write(from: buffer)
+        }
+
+        for output in [OutputFormat.mp3, .flac] {
+            let encoded = try await convert(wav, to: output, with: AudioConversionEngine())
+            let seconds = CMTimeGetSeconds(try await AVURLAsset(url: encoded).load(.duration))
+            XCTAssertEqual(seconds, 2.0, accuracy: 0.1, "\(output)")
+        }
+    }
 }

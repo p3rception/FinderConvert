@@ -135,16 +135,14 @@ public actor AudioConversionEngine: ConversionEngine {
             guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
             let numSamples = CMSampleBufferGetNumSamples(sampleBuffer)
 
-            var dataPointer: UnsafeMutablePointer<Int8>?
-            var length = 0
-            CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &dataPointer)
+            guard let pcm = pcmBytes(of: blockBuffer) else { continue }
 
-            guard let rawData = dataPointer else { continue }
-
-            // Interleaved 16-bit PCM
-            let pcmData = UnsafeRawPointer(rawData).bindMemory(to: Int16.self, capacity: numSamples * 2)
-
-            let written = lame_encode_buffer_interleaved(lame, UnsafeMutablePointer(mutating: pcmData), Int32(numSamples), mp3Buf, Int32(mp3BufSize))
+            // Interleaved 16-bit stereo PCM
+            let frames = min(numSamples, pcm.count / 4)
+            let written = pcm.withUnsafeBytes { raw in
+                lame_encode_buffer_interleaved(lame, UnsafeMutablePointer(mutating: raw.bindMemory(to: Int16.self).baseAddress),
+                                               Int32(frames), mp3Buf, Int32(mp3BufSize))
+            }
 
             if written > 0 {
                 fwrite(mp3Buf, 1, Int(written), outFile)
@@ -380,19 +378,16 @@ public actor AudioConversionEngine: ConversionEngine {
             guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
             let numSamples = CMSampleBufferGetNumSamples(sampleBuffer)
 
-            var dataPointer: UnsafeMutablePointer<Int8>?
-            var length = 0
-            CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &dataPointer)
-            guard let rawData = dataPointer else { continue }
+            guard var pcm = pcmBytes(of: blockBuffer) else { continue }
 
-            var audioBuffer = AudioBuffer(
-                mNumberChannels: UInt32(channels),
-                mDataByteSize: UInt32(length),
-                mData: UnsafeMutableRawPointer(rawData)
-            )
-            var bufferList = AudioBufferList(mNumberBuffers: 1, mBuffers: audioBuffer)
-
-            status = ExtAudioFileWrite(outputFile, UInt32(numSamples), &bufferList)
+            status = pcm.withUnsafeMutableBytes { raw in
+                var bufferList = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(
+                    mNumberChannels: UInt32(channels),
+                    mDataByteSize: UInt32(raw.count),
+                    mData: raw.baseAddress
+                ))
+                return ExtAudioFileWrite(outputFile, UInt32(numSamples), &bufferList)
+            }
             if status != noErr {
                 throw ConversionError.filesystemError("Failed to write FLAC data (status: \(status)).")
             }
@@ -405,4 +400,14 @@ public actor AudioConversionEngine: ConversionEngine {
             }
         }
     }
+}
+
+// The sample buffer's PCM bytes. CMBlockBufferGetDataPointer only reaches
+// the first contiguous segment of a block buffer; copying covers all of it
+func pcmBytes(of block: CMBlockBuffer) -> Data? {
+    let length = CMBlockBufferGetDataLength(block)
+    guard length > 0 else { return nil }
+    var data = Data(count: length)
+    let status = data.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
+    return status == kCMBlockBufferNoErr ? data : nil
 }

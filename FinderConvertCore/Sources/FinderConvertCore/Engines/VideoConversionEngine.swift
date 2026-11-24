@@ -253,11 +253,11 @@ public actor VideoConversionEngine: ConversionEngine {
         while let sb = output.copyNextSampleBuffer() {
             guard let block = CMSampleBufferGetDataBuffer(sb) else { continue }
             let n = CMSampleBufferGetNumSamples(sb)
-            var ptr: UnsafeMutablePointer<Int8>?; var len = 0
-            CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &len, dataPointerOut: &ptr)
-            guard let p = ptr else { continue }
-            let pcm = UnsafeRawPointer(p).bindMemory(to: Int16.self, capacity: n * 2)
-            let w = lame_encode_buffer_interleaved(lame, UnsafeMutablePointer(mutating: pcm), Int32(n), buf, Int32(bufSize))
+            guard let pcm = pcmBytes(of: block) else { continue }
+            let w = pcm.withUnsafeBytes { raw in
+                lame_encode_buffer_interleaved(lame, UnsafeMutablePointer(mutating: raw.bindMemory(to: Int16.self).baseAddress),
+                                               Int32(min(n, pcm.count / 4)), buf, Int32(bufSize))
+            }
             if w > 0 { fwrite(buf, 1, Int(w), outFile) }
             if totalSec > 0 { progress(min(0.9, 0.1 + 0.8 * CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sb)) / totalSec)) }
         }
