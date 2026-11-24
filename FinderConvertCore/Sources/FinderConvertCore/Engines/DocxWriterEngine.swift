@@ -152,7 +152,6 @@ public actor DocxWriterEngine: ConversionEngine {
 
     private func buildDocumentXML(from text: NSAttributedString) -> String {
         var paragraphs = ""
-        let fullRange = NSRange(location: 0, length: text.length)
         let plainText = text.string
 
         // Split into paragraphs and preserve runs with formatting
@@ -169,8 +168,6 @@ public actor DocxWriterEngine: ConversionEngine {
                 // Enumerate attribute runs within this line
                 let lineRange = NSRange(location: charIndex, length: lineLength)
                 text.enumerateAttributes(in: lineRange, options: []) { attrs, range, _ in
-                    let runStart = range.location - charIndex
-                    let runEnd = runStart + range.length
                     let startIdx = plainText.utf16.index(plainText.utf16.startIndex, offsetBy: range.location)
                     let endIdx = plainText.utf16.index(startIdx, offsetBy: range.length)
                     let runText = String(plainText[startIdx..<endIdx])
