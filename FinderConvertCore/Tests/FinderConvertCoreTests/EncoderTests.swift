@@ -245,6 +245,31 @@ final class EncoderTests: XCTestCase {
         XCTAssertGreaterThan(try XCTUnwrap(PDFDocument(url: output)).pageCount, 1)
     }
 
+    private func makeDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    func testHTMLToPDFRunsNoScriptsAndStaysOnTheDocument() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "SECRET-VALUE".write(to: directory.appending(path: "secret.txt"), atomically: true, encoding: .utf8)
+        let page = directory.appending(path: "page.html")
+        try """
+        <html><head><meta http-equiv="refresh" content="0;url=secret.txt"></head><body>
+        <p>VISIBLE-TEXT</p><iframe src="secret.txt"></iframe>
+        <script>document.body.insertAdjacentHTML('beforeend', '<p>SCRIPT-RAN</p>')</script>
+        </body></html>
+        """.write(to: page, atomically: true, encoding: .utf8)
+
+        let output = try await convert(page, to: .pdf, with: DocumentConversionEngine())
+        let text = try XCTUnwrap(PDFDocument(url: output)?.string)
+        XCTAssertTrue(text.contains("VISIBLE-TEXT"))
+        XCTAssertFalse(text.contains("SCRIPT-RAN"))
+        XCTAssertFalse(text.contains("SECRET-VALUE"))
+    }
+
     func testUpdateMustMatchTheInstalledSigner() async throws {
         let installer = UpdateInstaller()
         let calculator = URL(fileURLWithPath: "/System/Applications/Calculator.app")

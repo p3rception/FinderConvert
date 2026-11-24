@@ -209,14 +209,25 @@ public actor DocumentConversionEngine: ConversionEngine {
 
     @MainActor
     static func renderHTMLToPDF(html htmlString: String, baseURL: URL, to outputURL: URL) async throws {
-        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 612, height: 792))
+        // Input files are untrusted: no page scripts, and no navigation past
+        // the document itself (a meta refresh or iframe could otherwise pull
+        // another local file into the PDF)
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 612, height: 792), configuration: configuration)
         webView.loadHTMLString(htmlString, baseURL: baseURL)
 
         // Wait for load
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             class LoadDelegate: NSObject, WKNavigationDelegate {
                 let continuation: CheckedContinuation<Void, Error>
+                private var loadedDocument = false
                 init(_ c: CheckedContinuation<Void, Error>) { self.continuation = c }
+                func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                             decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+                    decisionHandler(loadedDocument ? .cancel : .allow)
+                    loadedDocument = true
+                }
                 func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
                     continuation.resume()
                 }
