@@ -97,6 +97,8 @@ public actor VideoConversionEngine: ConversionEngine {
         let transcoder = VideoTranscoder()
         activeTranscoders[job.id] = transcoder
         defer { activeTranscoders.removeValue(forKey: job.id) }
+        // A cancel that arrived before the transcoder was registered
+        if Task.isCancelled { await transcoder.cancel() }
         if prefs.maxOutputBytes > 0 {
             try await transcoder.run(fittingUnder: prefs.maxOutputBytes, sourceURL: sourceURL, destination: tempURL, options: options, progress: progress)
         } else {

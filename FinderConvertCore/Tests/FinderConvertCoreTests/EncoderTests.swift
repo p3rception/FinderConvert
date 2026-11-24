@@ -467,4 +467,20 @@ final class EncoderTests: XCTestCase {
         XCTAssertTrue(body.contains("<pre><code>&lt;raw&gt;</code></pre>"))
         XCTAssertTrue(body.contains("<blockquote><p>quoted</p></blockquote><hr/>"))
     }
+
+    func testCancellingStopsVideoAndPublishesNothing() async throws {
+        let movie = try await makeMovie(seconds: 20)
+        defer { try? FileManager.default.removeItem(at: movie) }
+        let started = Date()
+        let task = Task { try await QuickActionConversionService().convert(urls: [movie, movie], requestedOutput: .mp4) }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        task.cancel()
+        let result = try await task.value
+
+        XCTAssertTrue(result.successes.isEmpty)
+        XCTAssertTrue(result.failures.isEmpty, "a cancelled file is not a failure")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: movie.deletingLastPathComponent().path)
+        XCTAssertFalse(siblings.contains { $0.hasPrefix(movie.deletingPathExtension().lastPathComponent + " converted") })
+    }
 }

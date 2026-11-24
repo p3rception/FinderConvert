@@ -93,6 +93,8 @@ public struct QuickActionConversionService: Sendable {
         var failures: [ConversionFailure] = []
 
         for item in detected {
+            // Cancelling stops between files; finished outputs are kept
+            if Task.isCancelled { break }
             let file = item.file
             let originalRoot = item.root
             do {
@@ -106,8 +108,10 @@ public struct QuickActionConversionService: Sendable {
                     destinationPolicy: destinationPolicy(for: file.url, root: originalRoot, folderSuffix: " converted", fileSuffix: nil)
                 )
                 let engine = registry.engine(for: file.detectedType, output: chosenOutput)
-                let result = try await engine.convert(job: job) { _ in }
+                let result = try await run(engine, job)
                 successes.append(result)
+            } catch _ where Task.isCancelled {
+                break
             } catch let error as ConversionError {
                 failures.append(ConversionFailure(sourceURL: file.url, error: error))
             } catch {
@@ -140,6 +144,7 @@ public struct QuickActionConversionService: Sendable {
         var firstOutput: OutputFormat?
 
         for (file, originalRoot) in detected {
+            if Task.isCancelled { break }
             do {
                 guard let output = await Compression.target(for: file.url, type: file.detectedType) else {
                     skipped.append(file.url)
@@ -155,7 +160,7 @@ public struct QuickActionConversionService: Sendable {
                     destinationPolicy: destinationPolicy(for: file.url, root: originalRoot, folderSuffix: Compression.outputSuffix, fileSuffix: Compression.outputSuffix)
                 )
                 let engine = registry.engine(for: file.detectedType, output: output)
-                let result = try await engine.convert(job: job) { _ in }
+                let result = try await run(engine, job)
 
                 if let before = Compression.fileSize(file.url), let after = Compression.fileSize(result.outputURL), after >= before {
                     try? FileManager.default.removeItem(at: result.outputURL)
@@ -163,6 +168,8 @@ public struct QuickActionConversionService: Sendable {
                 } else {
                     successes.append(result)
                 }
+            } catch _ where Task.isCancelled {
+                break
             } catch let error as ConversionError {
                 failures.append(ConversionFailure(sourceURL: file.url, error: error))
             } catch {
@@ -178,6 +185,17 @@ public struct QuickActionConversionService: Sendable {
             failures: failures,
             skipped: skipped
         )
+    }
+
+    // Cancelling the calling task also stops the file in progress, for
+    // engines that support it (video); the others finish the current file.
+    // Their temp output is removed and nothing is published
+    private func run(_ engine: any ConversionEngine, _ job: ConversionJob) async throws -> ConversionResult {
+        try await withTaskCancellationHandler {
+            try await engine.convert(job: job) { _ in }
+        } onCancel: {
+            Task { await engine.cancel(jobID: job.id) }
+        }
     }
 
     // Copy each JPEG/PNG as "name clean.ext" with its metadata removed and

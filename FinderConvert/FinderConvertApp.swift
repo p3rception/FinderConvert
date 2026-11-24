@@ -49,6 +49,11 @@ struct MenuBarDropView: View {
                     ProgressView()
                         .controlSize(.small)
                 }
+                if appDelegate.conversionTask != nil {
+                    Button("Cancel") { appDelegate.cancelActiveConversion() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.top, 8)
@@ -503,6 +508,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var statusItem: NSStatusItem?
     @Published var activeConversion: ActiveConversion? {
         didSet { updateMenuBarMenu() }
+    }
+    // The running convert/compress batch, set while it can be cancelled
+    @Published private(set) var conversionTask: Task<Void, Never>?
+
+    func cancelActiveConversion() {
+        conversionTask?.cancel()
     }
     @Published var historyRefreshTrigger = false {
         didSet { updateMenuBarMenu() }
@@ -995,7 +1006,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     @discardableResult
     func runConversion(for urls: [URL], targetFormatId: String?, renameMap: [URL: String] = [:], presetName: String? = nil) -> Task<Void, Never> {
+        let task = Task { await convertBatch(urls, targetFormatId: targetFormatId, renameMap: renameMap, presetName: presetName) }
+        conversionTask = task
         Task {
+            await task.value
+            if conversionTask == task { conversionTask = nil }
+        }
+        return task
+    }
+
+    private func convertBatch(_ urls: [URL], targetFormatId: String?, renameMap: [URL: String], presetName: String?) async {
+        do {
             // Per-file preset: apply temporarily for this conversion only,
             // restoring the user's settings when it finishes
             var settingsSnapshot: Data?
@@ -1066,7 +1087,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 activeConversion = nil
                 lastResults = result.successes
 
-                if isLarge {
+                if Task.isCancelled {
+                    await postCancelledNotification(finished: result.successes.count)
+                } else if isLarge {
                     try? await postNotification(for: result)
                 }
                 logger.info("Conversion completed.")
@@ -1145,6 +1168,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         historyRefreshTrigger.toggle()
         lastResults = result.successes
 
+        if Task.isCancelled {
+            await postCancelledNotification(finished: result.successes.count)
+            return
+        }
         guard PreferencesManager.shared.showNotifications else { return }
         var lines: [String] = []
         if !result.successes.isEmpty, inputSize > 0 {
@@ -1273,6 +1300,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             content.body = "\(result.failures.count) file(s) could not be converted."
         }
         try await deliverNotification(content)
+    }
+
+    private func postCancelledNotification(finished: Int) async {
+        let body = finished == 0 ? "No files were converted." : (finished == 1 ? "1 file finished before stopping and was kept." : "\(finished) files finished before stopping and were kept.")
+        await postCompletionNotification(title: "Conversion cancelled", body: body)
     }
 
     private func postStartedNotification(fileDesc: String, format: String) async {
@@ -1645,6 +1677,10 @@ struct ConverterTab: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer()
+                    if appDelegate.conversionTask != nil {
+                        Button("Cancel") { appDelegate.cancelActiveConversion() }
+                            .buttonStyle(.link)
+                    }
                 }
                 .padding(.horizontal, 32)
                 .padding(.top, 16)
