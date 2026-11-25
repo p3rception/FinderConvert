@@ -4235,6 +4235,7 @@ struct CreatePresetSheet: View {
                         videoPreset: selectedType == .video ? videoPreset : nil,
                         stripMetadata: selectedType == .image ? stripMeta : nil,
                         audioBitrate: selectedType == .audio ? audioBitrate : nil,
+                        audioSampleRate: selectedType == .audio ? sampleRate : nil,
                         loudnessTarget: selectedType == .audio ? loudness : nil
                     )
                     PreferencesManager.shared.savePreset(name: name, settings: preset)
