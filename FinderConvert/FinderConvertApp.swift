@@ -572,6 +572,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // extension can't enumerate folders itself)
         MenuQueryServer.shared.start()
 
+        restartFolderWatching()
+
         // Check for updates now and periodically (the app lives in the menu
         // bar for weeks, so a launch-only check would go stale)
         checkForUpdatesInBackground()
@@ -1100,6 +1102,84 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 await postFailureNotification(message: error.localizedDescription)
             }
         }
+    }
+
+    // MARK: Watched folders
+
+    private var folderEvents: FSEventStreamRef?
+    private var handledWatchedFiles: Set<String> = []
+    private var watchQueue: [(url: URL, presetName: String?)] = []
+    private var isDrainingWatchQueue = false
+
+    // Watch the enabled folders for new files; call again after the list
+    // changes. Files added while the app isn't running are not picked up
+    func restartFolderWatching() {
+        if let stream = folderEvents {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            folderEvents = nil
+        }
+        let paths = PreferencesManager.shared.watchedFolders.filter(\.isEnabled).map(\.path)
+        guard !paths.isEmpty else { return }
+
+        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
+        let callback: FSEventStreamCallback = { _, info, count, eventPaths, flags, _ in
+            guard let info else { return }
+            let delegate = Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue()
+            let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
+            let added = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemModified)
+            let isFile = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile)
+            let files = (0..<min(count, paths.count)).filter { flags[$0] & added != 0 && flags[$0] & isFile != 0 }.map { URL(fileURLWithPath: paths[$0]) }
+            // The stream is scheduled on the main queue
+            MainActor.assumeIsolated { files.forEach { delegate.watchedFileChanged($0) } }
+        }
+        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
+        guard let stream = FSEventStreamCreate(nil, callback, &context, paths as CFArray,
+                                               FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 1.0, flags) else {
+            logger.error("Could not watch folders: \(paths, privacy: .public)")
+            return
+        }
+        FSEventStreamSetDispatchQueue(stream, .main)
+        FSEventStreamStart(stream)
+        folderEvents = stream
+    }
+
+    private func watchedFileChanged(_ url: URL) {
+        guard let folder = PreferencesManager.shared.watchedFolders.first(where: { $0.isEnabled && $0.shouldCompress(url) }) else { return }
+        Task {
+            // Wait until the file stops changing: a download or an export can
+            // still be writing when the first event arrives
+            var last = Self.sizeAndDate(of: url)
+            while true {
+                try? await Task.sleep(for: .seconds(2))
+                guard let now = Self.sizeAndDate(of: url) else { return }
+                if now == last { break }
+                last = now
+            }
+            // One compression per file version, however many events it raised
+            guard let stamp = last, handledWatchedFiles.insert("\(url.path)|\(stamp)").inserted else { return }
+            watchQueue.append((url, folder.presetName))
+            await drainWatchQueue()
+        }
+    }
+
+    // One file at a time: presets are applied to the shared settings for
+    // the length of a run
+    private func drainWatchQueue() async {
+        guard !isDrainingWatchQueue else { return }
+        isDrainingWatchQueue = true
+        defer { isDrainingWatchQueue = false }
+        while !watchQueue.isEmpty {
+            let next = watchQueue.removeFirst()
+            await runConversion(for: [next.url], targetFormatId: Compression.targetId, presetName: next.presetName).value
+        }
+    }
+
+    private static func sizeAndDate(of url: URL) -> [Double]? {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+              let size = values.fileSize, let date = values.contentModificationDate else { return nil }
+        return [Double(size), date.timeIntervalSince1970]
     }
 
     // Output paths after applying the Converter's custom names
@@ -3316,6 +3396,7 @@ struct PresetsTab: View {
 struct SettingsTab: View {
     @State private var renameSuffix: String = PreferencesManager.shared.renameSuffix
     @State private var useCustomOutput = PreferencesManager.shared.useCustomOutputFolder
+    @State private var watchedFolders = PreferencesManager.shared.watchedFolders
     @State private var customOutputPath: String = PreferencesManager.shared.customOutputFolder?.path ?? ""
     @State private var showNotifications = PreferencesManager.shared.showNotifications
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -3385,6 +3466,61 @@ struct SettingsTab: View {
                                 if val && customOutputPath.isEmpty { pickOutputFolder() }
                             }
                     }
+                }
+
+                // --- Watched folders ---
+                settingsSection(title: "WATCHED FOLDERS", icon: "eye") {
+                    ForEach($watchedFolders) { $folder in
+                        settingsRow {
+                            Image(systemName: "folder.fill")
+                                .foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(URL(fileURLWithPath: folder.path).lastPathComponent)
+                                    .font(.body)
+                                Text((folder.path as NSString).abbreviatingWithTildeInPath)
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.head)
+                            }
+                            Spacer()
+                            Picker("", selection: Binding(
+                                get: { folder.presetName ?? "" },
+                                set: { folder.presetName = $0.isEmpty ? nil : $0 }
+                            )) {
+                                Text("Current Settings").tag("")
+                                ForEach(watchPresetNames, id: \.self) { Text($0).tag($0) }
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                            .controlSize(.small)
+                            Toggle("", isOn: $folder.isEnabled)
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                                .labelsHidden()
+                            Button {
+                                watchedFolders.removeAll { $0.id == folder.id }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Stop watching this folder")
+                        }
+                        Divider().padding(.leading, 16)
+                    }
+                    settingsRow {
+                        Text("New files get a compressed copy beside them, while FinderConvert is running.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Spacer()
+                        Button("Add Folder...") { addWatchedFolder() }
+                            .font(.caption)
+                    }
+                }
+                .onChange(of: watchedFolders) { _, folders in
+                    PreferencesManager.shared.watchedFolders = folders
+                    AppDelegate.instance?.restartFolderWatching()
                 }
 
                 // --- General ---
@@ -3575,6 +3711,23 @@ struct SettingsTab: View {
                         .fill(Color.primary.opacity(0.06))
                 )
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    // Built-in presets first, then the user's own
+    private var watchPresetNames: [String] {
+        PresetSettings.builtIn.map(\.name) + PreferencesManager.shared.loadAllPresets().keys.sorted()
+    }
+
+    private func addWatchedFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Watch Folder"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls where !watchedFolders.contains(where: { $0.path == url.path }) {
+            watchedFolders.append(WatchedFolder(path: url.path))
         }
     }
 

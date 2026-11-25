@@ -206,6 +206,19 @@ public struct PreferencesManager: @unchecked Sendable {
         return (try? JSONDecoder().decode([String: PresetSettings].self, from: data)) ?? [:]
     }
 
+    // Folders whose new files are compressed automatically, as JSON
+    public var watchedFolders: [WatchedFolder] {
+        get {
+            guard let data = defaults.data(forKey: "watchedFolders") else { return [] }
+            return (try? JSONDecoder().decode([WatchedFolder].self, from: data)) ?? []
+        }
+        nonmutating set {
+            if let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: "watchedFolders")
+            }
+        }
+    }
+
     public func deletePreset(name: String) {
         var presets = loadAllPresets()
         presets.removeValue(forKey: name)
@@ -534,3 +547,32 @@ public struct PresetSettings: Codable, Sendable {
     ]
 }
 
+// A folder whose new files get a compressed copy beside them
+public struct WatchedFolder: Codable, Sendable, Identifiable, Equatable {
+    public var id: UUID
+    public var path: String
+    // nil compresses with the current settings
+    public var presetName: String?
+    public var isEnabled: Bool
+
+    public init(id: UUID = UUID(), path: String, presetName: String? = nil, isEnabled: Bool = true) {
+        self.id = id
+        self.path = path
+        self.presetName = presetName
+        self.isEnabled = isEnabled
+    }
+
+    // A file that just appeared is compressed when it sits directly in the
+    // folder, isn't hidden (screenshots and downloads start as hidden or
+    // .download files and are renamed when done) and isn't one of
+    // FinderConvert's own compressed copies, which would loop
+    public func shouldCompress(_ url: URL) -> Bool {
+        let folder = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+        guard url.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path == folder,
+              !url.lastPathComponent.hasPrefix("."),
+              url.deletingPathExtension().lastPathComponent.wholeMatch(of: /.* compressed( \d+)?/) == nil,
+              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+              let type = try? FileTypeDetector().detect(url: url).detectedType else { return false }
+        return Compression.isCompressible(type)
+    }
+}

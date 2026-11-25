@@ -95,6 +95,7 @@ Each format has configurable options via the slider icon in the Formats tab:
 - **Smart format picker** -- only shows valid output formats for the dropped files
 - **Preset profiles** -- built-in and custom groups of settings (e.g. "Web Optimized")
 - **Per-file overrides** -- different target format or preset per file in one batch
+- **Watched folders** -- in Settings, pick folders (Desktop for screenshots, Downloads, an export folder) and a preset; new files there get a compressed copy beside them while FinderConvert is running
 - **Cancel** -- stop a running conversion or compression from the converter window or the menu bar; finished files are kept, a video in progress stops immediately
 - **Custom output folder**, **batch rename**, **conversion history with undo**
 - **In-place auto-updates** from GitHub releases

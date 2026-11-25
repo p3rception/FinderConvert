@@ -305,4 +305,27 @@ final class CompressionTests: XCTestCase {
         XCTAssertEqual(result.failures.map(\.sourceURL), [png])
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appending(path: "shot clean.png").path))
     }
+
+    func testWatchedFolderPicksOnlyNewCompressibleFiles() throws {
+        let photo = try writeSample(named: "Screenshot 1.png", type: .png, quality: 1)
+        let folder = WatchedFolder(path: directory.path)
+        XCTAssertTrue(folder.shouldCompress(photo))
+
+        let output = directory.appending(path: "Screenshot 1 compressed.png")
+        let secondOutput = directory.appending(path: "Screenshot 1 compressed 2.png")
+        let hidden = directory.appending(path: ".Screenshot 2.png")
+        let text = directory.appending(path: "notes.txt")
+        let nested = directory.appending(path: "sub/inner.png")
+        try FileManager.default.createDirectory(at: nested.deletingLastPathComponent(), withIntermediateDirectories: true)
+        for url in [output, secondOutput, hidden, nested] { try FileManager.default.copyItem(at: photo, to: url) }
+        try "x".write(to: text, atomically: true, encoding: .utf8)
+        for url in [output, secondOutput, hidden, text, nested, directory.appending(path: "gone.png")] {
+            XCTAssertFalse(folder.shouldCompress(url), url.lastPathComponent)
+        }
+
+        // The list survives a round trip through settings JSON
+        let decoded = try JSONDecoder().decode([WatchedFolder].self, from: JSONEncoder().encode([folder, WatchedFolder(path: "/tmp", presetName: "Web Optimized")]))
+        XCTAssertEqual(decoded[1].presetName, "Web Optimized")
+        XCTAssertEqual(decoded[0], folder)
+    }
 }
