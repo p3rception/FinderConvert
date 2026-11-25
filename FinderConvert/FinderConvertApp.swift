@@ -1007,8 +1007,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private static let largeFileThreshold: Int64 = 1_000_000 // 1 MB
 
     @discardableResult
-    func runConversion(for urls: [URL], targetFormatId: String?, renameMap: [URL: String] = [:], presetName: String? = nil) -> Task<Void, Never> {
-        let task = Task { await convertBatch(urls, targetFormatId: targetFormatId, renameMap: renameMap, presetName: presetName) }
+    // `quietIfUnchanged`: skip the notification when nothing was compressed
+    // or failed (watched folders, where most new files may not shrink)
+    func runConversion(for urls: [URL], targetFormatId: String?, renameMap: [URL: String] = [:], presetName: String? = nil,
+                       quietIfUnchanged: Bool = false) -> Task<Void, Never> {
+        let task = Task { await convertBatch(urls, targetFormatId: targetFormatId, renameMap: renameMap, presetName: presetName, quietIfUnchanged: quietIfUnchanged) }
         conversionTask = task
         Task {
             await task.value
@@ -1017,7 +1020,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         return task
     }
 
-    private func convertBatch(_ urls: [URL], targetFormatId: String?, renameMap: [URL: String], presetName: String?) async {
+    private func convertBatch(_ urls: [URL], targetFormatId: String?, renameMap: [URL: String], presetName: String?, quietIfUnchanged: Bool) async {
         do {
             // Per-file preset: apply temporarily for this conversion only,
             // restoring the user's settings when it finishes
@@ -1032,7 +1035,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 }
             }
             if targetFormatId == Compression.targetId {
-                await runCompression(for: urls, renameMap: renameMap)
+                await runCompression(for: urls, renameMap: renameMap, quietIfUnchanged: quietIfUnchanged)
                 return
             }
             do {
@@ -1172,7 +1175,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         defer { isDrainingWatchQueue = false }
         while !watchQueue.isEmpty {
             let next = watchQueue.removeFirst()
-            await runConversion(for: [next.url], targetFormatId: Compression.targetId, presetName: next.presetName).value
+            await runConversion(for: [next.url], targetFormatId: Compression.targetId, presetName: next.presetName, quietIfUnchanged: true).value
         }
     }
 
@@ -1215,7 +1218,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     // Same-format re-encode with the current (or temporarily applied preset)
     // settings. Always notifies: the result is worth knowing even when quick
-    private func runCompression(for urls: [URL], renameMap: [URL: String]) async {
+    private func runCompression(for urls: [URL], renameMap: [URL: String], quietIfUnchanged: Bool = false) async {
         let fileDesc = urls.count == 1 ? "1 file" : "\(urls.count) files"
         activeConversion = ActiveConversion(description: "Compressing \(fileDesc)")
         defer { activeConversion = nil }
@@ -1252,6 +1255,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             await postCancelledNotification(finished: result.successes.count)
             return
         }
+        if quietIfUnchanged && result.successes.isEmpty && result.failures.isEmpty { return }
         guard PreferencesManager.shared.showNotifications else { return }
         var lines: [String] = []
         if !result.successes.isEmpty, inputSize > 0 {
