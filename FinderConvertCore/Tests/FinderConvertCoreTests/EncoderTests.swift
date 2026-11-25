@@ -483,4 +483,65 @@ final class EncoderTests: XCTestCase {
         let siblings = try FileManager.default.contentsOfDirectory(atPath: movie.deletingLastPathComponent().path)
         XCTAssertFalse(siblings.contains { $0.hasPrefix(movie.deletingPathExtension().lastPathComponent + " converted") })
     }
+
+    // Stereo 48 kHz WAV, `seconds` long, both channels from `sample(frame)`
+    private func writeWAV(in directory: URL, named name: String, seconds: Double, sample: (Int) -> Float) throws -> URL {
+        let url = directory.appending(path: name)
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
+        let frames = AVAudioFrameCount(48_000 * seconds)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        for frame in 0..<Int(frames) {
+            let value = sample(frame)
+            buffer.floatChannelData![0][frame] = value
+            buffer.floatChannelData![1][frame] = value
+        }
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        try file.write(from: buffer)
+        return url
+    }
+
+    private func loudness(of url: URL) async throws -> (lufs: Double, peak: Double) {
+        let asset = AVURLAsset(url: url)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(tracks.first)
+        return try Loudness.measure(track, in: asset, settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2])
+    }
+
+    private func sine(dBFS: Double, frame: Int) -> Float {
+        Float(pow(10, dBFS / 20) * sin(2 * .pi * 1000 * Double(frame) / 48_000))
+    }
+
+    func testLoudnessNormalisationHitsTargetWithinPeakCeiling() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let prefs = PreferencesManager.shared
+        defer { prefs.setLoudnessTarget(0, for: .wav); prefs.setLoudnessTarget(0, for: .flac) }
+
+        // EBU Tech 3341 case 1: stereo 1 kHz sine at -23 dBFS reads -23 LUFS
+        let tone = try writeWAV(in: directory, named: "tone.wav", seconds: 5) { self.sine(dBFS: -23, frame: $0) }
+        let measured = try await loudness(of: tone).lufs
+        XCTAssertEqual(measured, -23, accuracy: 0.1)
+
+        prefs.setLoudnessTarget(-16, for: .flac)
+        let louder = try await convert(tone, to: .flac, with: AudioConversionEngine())
+        let normalised = try await loudness(of: louder).lufs
+        XCTAssertEqual(normalised, -16, accuracy: 0.2)
+
+        // Quiet tone with one near-full-scale spike: the gain stops at -1 dBFS
+        let spiky = try writeWAV(in: directory, named: "spiky.wav", seconds: 5) { frame in
+            frame == 24_000 ? 0.9 : self.sine(dBFS: -40, frame: frame)
+        }
+        prefs.setLoudnessTarget(-14, for: .wav)
+        let cappedURL = try await convert(spiky, to: .wav, with: AudioConversionEngine())
+        let capped = try await loudness(of: cappedURL)
+        XCTAssertLessThanOrEqual(capped.peak, pow(10, -1.0 / 20) + 0.001)
+        XCTAssertLessThan(capped.lufs, -14)
+
+        // Silence passes through untouched instead of failing
+        let silence = try writeWAV(in: directory, named: "silence.wav", seconds: 2) { _ in 0 }
+        let silentURL = try await convert(silence, to: .wav, with: AudioConversionEngine())
+        let silentPeak = try await loudness(of: silentURL).peak
+        XCTAssertEqual(silentPeak, 0)
+    }
 }

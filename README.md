@@ -87,6 +87,7 @@ Each format has configurable options via the slider icon in the Formats tab:
 - **Fit under a size** -- hold every output under 1/5/10/25/100 MB: images lower quality, then dimensions; videos switch to a bitrate that fits
 - **MP3/M4A** -- bitrate (64, 128, 192, 256 kbps)
 - **WAV/AIFF/M4A/MP3/FLAC** -- sample rate (22.05, 44.1, 48 kHz)
+- **All audio formats** -- loudness normalisation to -14 LUFS (Spotify, YouTube) or -16 LUFS (Apple Music, podcasts), measured per EBU R128; the gain stops where peaks would pass -1 dBFS. Also applies to audio extracted from video and to presets
 
 ### App Features
 

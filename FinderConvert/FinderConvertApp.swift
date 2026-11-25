@@ -2343,6 +2343,7 @@ struct FormatRowView: View {
     @State private var videoPreset: String
     @State private var audioSampleRate: Int
     @State private var audioChannels: Int
+    @State private var loudness: Int
     @State private var audioBitrate: Int
     @State private var stripMetadata: Bool
     @State private var markdownStyle: MarkdownStyle
@@ -2365,6 +2366,7 @@ struct FormatRowView: View {
         self._videoPreset = State(initialValue: PreferencesManager.shared.videoPreset(for: format))
         self._audioSampleRate = State(initialValue: PreferencesManager.shared.audioSampleRate(for: format))
         self._audioChannels = State(initialValue: PreferencesManager.shared.audioChannels(for: format))
+        self._loudness = State(initialValue: PreferencesManager.shared.loudnessTarget(for: format))
         self._audioBitrate = State(initialValue: PreferencesManager.shared.audioBitrate(for: format))
         self._stripMetadata = State(initialValue: PreferencesManager.shared.stripMetadata(for: format))
         self._markdownStyle = State(initialValue: PreferencesManager.shared.markdownStyle)
@@ -2449,6 +2451,9 @@ struct FormatRowView: View {
         }
         if format.supportsAudioChannels && audioChannels == 1 {
             parts.append("mono")
+        }
+        if format.category == .audio && loudness != 0 {
+            parts.append("\(loudness) LUFS")
         }
         if format.supportsAudioBitrate && audioBitrate != 128000 {
             parts.append("\(audioBitrate / 1000)k")
@@ -2637,6 +2642,27 @@ struct FormatRowView: View {
                     .onChange(of: audioChannels) { _, val in
                         PreferencesManager.shared.setAudioChannels(val, for: format)
                     }
+                }
+            }
+
+            if format.category == .audio {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Loudness")
+                        .font(.subheadline)
+                    Picker("", selection: $loudness) {
+                        Text("Off").tag(0)
+                        Text("-14 LUFS").tag(-14)
+                        Text("-16 LUFS").tag(-16)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: loudness) { _, val in
+                        PreferencesManager.shared.setLoudnessTarget(val, for: format)
+                    }
+                    Text("-14 LUFS suits Spotify and YouTube, -16 LUFS Apple Music and podcasts. Peaks stay below -1 dBFS, so quiet files with loud spikes may end up under the target.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -4062,6 +4088,7 @@ struct CreatePresetSheet: View {
     // Audio settings
     @State private var audioBitrate: Int = 128000
     @State private var sampleRate: Int = 44100
+    @State private var loudness: Int = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -4175,6 +4202,17 @@ struct CreatePresetSheet: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
+
+                        Divider()
+
+                        Text("Loudness").font(.subheadline)
+                        Picker("", selection: $loudness) {
+                        Text("Off").tag(0)
+                        Text("-14 LUFS").tag(-14)
+                        Text("-16 LUFS").tag(-16)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                     }
                     .padding(4)
                 } label: {
@@ -4196,7 +4234,8 @@ struct CreatePresetSheet: View {
                         maxLongestEdge: selectedType == .image ? maxEdge : nil,
                         videoPreset: selectedType == .video ? videoPreset : nil,
                         stripMetadata: selectedType == .image ? stripMeta : nil,
-                        audioBitrate: selectedType == .audio ? audioBitrate : nil
+                        audioBitrate: selectedType == .audio ? audioBitrate : nil,
+                        loudnessTarget: selectedType == .audio ? loudness : nil
                     )
                     PreferencesManager.shared.savePreset(name: name, settings: preset)
                     name = ""
@@ -4232,6 +4271,7 @@ struct EditPresetSheet: View {
     @State private var stripMeta: Bool
     @State private var videoPreset: String
     @State private var audioBitrate: Int
+    @State private var loudness: Int
 
     private let hasQuality: Bool
     private let hasResize: Bool
@@ -4254,6 +4294,7 @@ struct EditPresetSheet: View {
         self._stripMeta = State(initialValue: s.stripMetadata ?? false)
         self._videoPreset = State(initialValue: s.videoPreset ?? "highest")
         self._audioBitrate = State(initialValue: s.audioBitrate ?? 128000)
+        self._loudness = State(initialValue: s.loudnessTarget ?? 0)
     }
 
     var body: some View {
@@ -4332,6 +4373,16 @@ struct EditPresetSheet: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                 }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Loudness").font(.subheadline)
+                    Picker("", selection: $loudness) {
+                        Text("Off").tag(0)
+                        Text("-14 LUFS").tag(-14)
+                        Text("-16 LUFS").tag(-16)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
             }
 
             HStack {
@@ -4371,7 +4422,10 @@ struct EditPresetSheet: View {
         }
         if hasStrip { s.stripMetadata = stripMeta }
         if hasVideo { s.videoPreset = videoPreset }
-        if hasBitrate { s.audioBitrate = audioBitrate }
+        if hasBitrate {
+            s.audioBitrate = audioBitrate
+            s.loudnessTarget = loudness
+        }
 
         if preset.isBuiltIn {
             PreferencesManager.shared.setBuiltInOverride(s, named: preset.name)

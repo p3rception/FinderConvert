@@ -132,6 +132,11 @@ public actor VideoConversionEngine: ConversionEngine {
         format: OutputFormat,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws {
+        // Loudness normalisation lives in the audio engine's encoders
+        if PreferencesManager.shared.loudnessTarget(for: format) != 0 {
+            try await AudioConversionEngine().encode(source: asset.url, destination: destination, output: format, progress: progress)
+            return
+        }
         if format == .m4a {
             guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
                 throw ConversionError.filesystemError("Could not create audio export session.")

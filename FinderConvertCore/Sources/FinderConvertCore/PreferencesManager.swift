@@ -125,6 +125,16 @@ public struct PreferencesManager: @unchecked Sendable {
         defaults.set(value, forKey: "audioChannels_\(format.rawValue)")
     }
 
+    // Integrated loudness target in LUFS (-14 streaming, -16 Apple Music),
+    // or 0 to leave levels alone. Audio formats only
+    public func loudnessTarget(for format: OutputFormat) -> Int {
+        defaults.integer(forKey: "loudnessTarget_\(format.rawValue)")
+    }
+
+    public func setLoudnessTarget(_ value: Int, for format: OutputFormat) {
+        defaults.set(value, forKey: "loudnessTarget_\(format.rawValue)")
+    }
+
     // Audio bitrate for AAC: 64000, 128000, 192000, 256000
     public func audioBitrate(for format: OutputFormat) -> Int {
         let val = defaults.integer(forKey: "audioBitrate_\(format.rawValue)")
@@ -269,6 +279,9 @@ public struct PreferencesManager: @unchecked Sendable {
             if let rate = preset.audioSampleRate { setAudioSampleRate(rate, for: f) }
             if let channels = preset.audioChannels { setAudioChannels(channels, for: f) }
         }
+        if let target = preset.loudnessTarget {
+            for f in OutputFormat.allCases where f.category == .audio { setLoudnessTarget(target, for: f) }
+        }
     }
 
     // MARK: Temporary settings snapshots (per-file preset conversion)
@@ -337,6 +350,7 @@ public struct PreferencesManager: @unchecked Sendable {
         for (key, v) in snap.audioBitrate { if let f = OutputFormat(rawValue: key) { setAudioBitrate(v, for: f) } }
         for (key, v) in snap.audioSampleRate ?? [:] { if let f = OutputFormat(rawValue: key) { setAudioSampleRate(v, for: f) } }
         for (key, v) in snap.audioChannels ?? [:] { if let f = OutputFormat(rawValue: key) { setAudioChannels(v, for: f) } }
+        for (key, v) in snap.loudnessTarget ?? [:] { if let f = OutputFormat(rawValue: key) { setLoudnessTarget(v, for: f) } }
     }
 
     private func captureSnapshot() -> FormatSettingsSnapshot {
@@ -350,6 +364,9 @@ public struct PreferencesManager: @unchecked Sendable {
             if f.supportsVideoQuality { snap.videoPreset[f.rawValue] = videoPreset(for: f) }
             if f.category == .image { snap.stripMetadata[f.rawValue] = stripMetadata(for: f) }
             if f.supportsAudioBitrate { snap.audioBitrate[f.rawValue] = audioBitrate(for: f) }
+            if f.category == .audio {
+                snap.loudnessTarget = (snap.loudnessTarget ?? [:]).merging([f.rawValue: loudnessTarget(for: f)]) { _, new in new }
+            }
             if f.supportsAudioChannels {
                 snap.audioSampleRate = (snap.audioSampleRate ?? [:]).merging([f.rawValue: audioSampleRate(for: f)]) { _, new in new }
                 snap.audioChannels = (snap.audioChannels ?? [:]).merging([f.rawValue: audioChannels(for: f)]) { _, new in new }
@@ -397,6 +414,7 @@ struct FormatSettingsSnapshot: Codable {
     // Optional: baselines saved by earlier versions lack these keys
     var audioSampleRate: [String: Int]?
     var audioChannels: [String: Int]?
+    var loudnessTarget: [String: Int]?
 }
 
 public struct PresetSettings: Codable, Sendable {
@@ -415,12 +433,14 @@ public struct PresetSettings: Codable, Sendable {
     // WAV/AIFF/FLAC only
     public var audioSampleRate: Int?
     public var audioChannels: Int?
+    // LUFS, 0 = off
+    public var loudnessTarget: Int?
     public var description: String?
 
     public init(jpegQuality: Double? = nil, heicQuality: Double? = nil, webpQuality: Double? = nil, avifQuality: Double? = nil,
                 pngQuality: Double? = nil, resizePercent: Int? = nil, maxLongestEdge: Int? = nil, videoPreset: String? = nil,
                 stripMetadata: Bool? = nil, audioBitrate: Int? = nil, audioSampleRate: Int? = nil, audioChannels: Int? = nil,
-                description: String? = nil) {
+                loudnessTarget: Int? = nil, description: String? = nil) {
         self.jpegQuality = jpegQuality
         self.heicQuality = heicQuality
         self.webpQuality = webpQuality
@@ -428,6 +448,7 @@ public struct PresetSettings: Codable, Sendable {
         self.pngQuality = pngQuality
         self.audioSampleRate = audioSampleRate
         self.audioChannels = audioChannels
+        self.loudnessTarget = loudnessTarget
         self.resizePercent = resizePercent
         self.maxLongestEdge = maxLongestEdge
         self.videoPreset = videoPreset

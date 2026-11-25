@@ -59,7 +59,7 @@ public enum Compression {
                 || preset.avifQuality != nil || preset.pngQuality != nil || preset.resizePercent != nil
                 || preset.maxLongestEdge != nil
         case .video: return preset.videoPreset != nil
-        case .audio: return preset.audioBitrate != nil
+        case .audio: return preset.audioBitrate != nil || preset.loudnessTarget != nil
         default: return false
         }
     }
